@@ -1,7 +1,7 @@
 [project]
 name = "traced-harness"
 version = "0.1.0"
-description = "Minimal Agno agent harness with OpenTelemetry instrumentation and MCP integration"
+description = "A test bed harness for evaluating agentic peripherals (MCP, skills, etc.)"
 readme = "README.md"
 authors = [
     { name = "Gavin Morgan", email = "hello@gavmor.com" }

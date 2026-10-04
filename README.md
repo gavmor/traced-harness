@@ -1,6 +1,6 @@
 # traced-harness
 
-Minimal, production-ready agent evaluation and testing harness powered by [Agno](https://github.com/agno-agi/agno) and instrumented with OpenTelemetry to connect to any Model Context Protocol (MCP) server.
+A test bed harness for evaluating agentic peripherals (MCP, skills, etc.)
 
 ## Features
 
