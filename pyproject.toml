@@ -1,24 +1,26 @@
 [project]
 name = "traced-agent"
 version = "0.1.0"
-description = "Minimal DSPy ReAct agent with OpenTelemetry instrumentation and MCP integration"
+description = "Minimal Agno agent harness with OpenTelemetry instrumentation and MCP integration"
 readme = "README.md"
 authors = [
     { name = "Gavin Morgan", email = "hello@gavmor.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "dspy>=3.4.0",
+    "agno>=3.1.1",
     "google-genai>=2.28.0",
     "mcp>=1.2.0",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-exporter-otlp>=1.28.0",
     "opentelemetry-sdk>=1.28.0",
     "pydantic>=2.10.0",
+    "rich>=13.9.0",
 ]
 
 [project.scripts]
 traced-agent = "traced_agent.main:main"
+traced-agno = "traced_agent.main:main"
 traced-dspy = "traced_agent.main:main"
 
 [build-system]

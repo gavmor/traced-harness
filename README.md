@@ -1,44 +1,42 @@
 # traced-agent
 
-Minimal DSPy ReAct agent instrumented with OpenTelemetry and designed to connect to any Model Context Protocol (MCP) server.
+Minimal, production-ready agent harness powered by [Agno](https://github.com/agno-agi/agno) and instrumented with OpenTelemetry to connect to any Model Context Protocol (MCP) server.
 
 ## Features
 
-- **Minimal & Generic**: Connects to any MCP server over `stdio`, Python in-process (`module:server`), or HTTP/SSE.
-- **OpenTelemetry Instrumentation**: Automatically emits `agent.turn` parent spans and `tool_call.<name>` child spans with full parameter payloads and completion metadata.
-- **Interactive REPL**:
+- **Lightweight & Generic**: Connects to any MCP server over `stdio` (e.g. `uv run <project> mcp`), Python in-process (`module:server`), or HTTP/SSE.
+- **Native Async MCP**: Uses `agno.tools.mcp.MCPTools` to directly discover and invoke tools without custom trajectory parsing.
+- **OpenTelemetry Instrumentation**: Automatically records `agent.turn` parent spans and `tool_call.<name>` child spans with parameters, outputs, and model metrics.
+- **Rich Terminal REPL**:
   - `/new [id]` - Reset conversation context and rotate session trace log without process restart.
-  - `/status` - Inspect current MCP target, discovered tools, active model, and trace log location.
+  - `/status` - Inspect current MCP target, loaded tools count, model, and active trace log.
   - `/tools` - List all tools exposed by the connected MCP server.
   - `/clear` - Clear terminal screen.
-- **Durable Trace Logging**: Writes clean, sequential turn traces into `sessions/trace_<id>.jsonl` for offline evaluation.
+- **Durable Trace Logging**: Writes clean turn-by-turn trace records into `sessions/trace_<id>.jsonl` for offline evaluation.
 
 ## Installation
 
 ```bash
-# Run directly via uv
-uv run traced-agent
-
-# Or install as a global tool
-uv tool install --editable .
+# Install globally via uv
+uv tool install --editable /home/user/Desktop/gavmor/traced-agent
 ```
+
+This registers `traced-agent` (and aliases `traced-agno`, `traced-dspy`) on `$PATH`.
 
 ## Usage
 
-### Connect to an MCP server over stdio
+### Auto-detection
+If running in a project with `.mcp.json` or `MCP_SERVER` defined, simply run:
+```bash
+traced-agent
+```
+
+### Connect over stdio
 ```bash
 traced-agent --mcp "uv run foxhole mcp"
 ```
 
-### Connect to an in-process Python MCP server
-```bash
-traced-agent --server "foxhole.server:server"
-```
-
 ### One-shot query
 ```bash
-traced-agent --mcp "uv run foxhole mcp" "What are the specs of the Colonial Bardel?"
+traced-agent "What is the health of a Devitt Mark III?"
 ```
-
-### Auto-detection
-If running in a project with an `.mcp.json` or standard MCP server in the environment (`MCP_SERVER`), `traced-agent` auto-discovers and connects directly.

@@ -1,4 +1,4 @@
-"""Interactive REPL for traced-agent with session management and live inspection."""
+"""Interactive REPL for traced-agent powered by Agno."""
 
 from __future__ import annotations
 
@@ -6,9 +6,15 @@ import asyncio
 import uuid
 from pathlib import Path
 
+from agno.agent import Agent
 from mcp.client import Client
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 
-from traced_agent.agent import DEFAULT_MODEL, execute_turn
+from traced_agent.agent import DEFAULT_MODEL, TurnResult, create_agent, execute_turn
+
+console = Console()
 
 
 def print_banner(
@@ -18,14 +24,23 @@ def print_banner(
     tool_count: int,
     model_name: str,
 ) -> None:
-    print("\033[1;32m═══════════════════════════════════════════════════════════════\033[0m")
-    print("\033[1;32m🔍 traced-agent (DSPy ReAct + OpenTelemetry + MCP)\033[0m")
-    print(f"\033[2mMCP Server : {mcp_label} ({tool_count} tools available)\033[0m")
-    print(f"\033[2mSession ID : {session_id}\033[0m")
-    print(f"\033[2mTrace Log  : {session_file}\033[0m")
-    print(f"\033[2mModel      : {model_name}\033[0m")
-    print("\033[2mCommands   : /new [name], /status, /tools, /clear, or 'exit'/'quit'\033[0m")
-    print("\033[1;32m═══════════════════════════════════════════════════════════════\033[0m\n")
+    header = (
+        f"[bold green]🔍 traced-agent (Agno + OpenTelemetry + MCP)[/]\n"
+        f"[dim]MCP Server : {mcp_label} ({tool_count} tools available)[/dim]\n"
+        f"[dim]Session ID : {session_id}[/dim]\n"
+        f"[dim]Trace Log  : {session_file}[/dim]\n"
+        f"[dim]Model      : {model_name}[/dim]\n"
+        f"[dim]Commands   : /new [name], /status, /tools, /clear, or 'exit'/'quit'[/dim]"
+    )
+    console.print(Panel(header, border_style="green"))
+
+
+def display_turn(res: TurnResult) -> None:
+    """Format and display turn execution using Rich panels."""
+    if res.tools_called:
+        calls = "\n".join(f"• [bold cyan]{t.name}[/]({t.input_parameters})" for t in res.tools_called)
+        console.print(Panel(calls, title="Tool Calls", border_style="blue"))
+    console.print(Panel(Markdown(res.output), title="Response", border_style="green"))
 
 
 async def run_repl(
@@ -42,41 +57,39 @@ async def run_repl(
     session_dir.mkdir(parents=True, exist_ok=True)
     session_file = session_dir / f"trace_{session_id}.jsonl"
 
+    agent: Agent = await create_agent(client, model_name=model_name)
     tools_resp = await client.list_tools()
     tool_count = len(tools_resp.tools)
 
     print_banner(session_id, session_file, mcp_label, tool_count, model_name)
 
     if initial_prompt:
-        print(f"\033[1;34m>>> {initial_prompt}\033[0m")
+        console.print(f"[bold blue]>>> {initial_prompt}[/]")
         try:
             res = await execute_turn(
                 initial_prompt,
-                client=client,
+                agent=agent,
                 session_id=session_id,
                 session_file=session_file,
                 mcp_label=mcp_label,
-                model_name=model_name,
             )
-            if res.tools_called:
-                print(f"\033[2m🔧 Tools invoked: {', '.join(t.name for t in res.tools_called)}\033[0m")
-            print("\n" + res.output + "\n")
+            display_turn(res)
         except Exception as exc:  # noqa: BLE001
-            print(f"\033[1;31mError: {exc}\033[0m\n")
+            console.print(f"[bold red]Error: {exc}[/]\n")
 
     loop = asyncio.get_running_loop()
     while True:
         try:
-            raw_input = await loop.run_in_executor(None, input, "\033[1;36magent>\033[0m ")
+            raw_input = await loop.run_in_executor(None, input, "agent> ")
         except (EOFError, KeyboardInterrupt):
-            print("\n\033[2mEnding session. OpenTelemetry traces preserved.\033[0m")
+            console.print("\n[dim]Ending session. OpenTelemetry traces preserved.[/dim]")
             break
 
         query = raw_input.strip()
         if not query:
             continue
         if query.lower() in ("exit", "quit", ":q", "q"):
-            print("\033[2mEnding session. OpenTelemetry traces preserved.\033[0m")
+            console.print("[dim]Ending session. OpenTelemetry traces preserved.[/dim]")
             break
 
         if query.startswith(("/new", "/reset")):
@@ -86,61 +99,60 @@ async def run_repl(
             )
             session_id = new_id
             session_file = session_dir / f"trace_{session_id}.jsonl"
-            print(
-                "\n\033[1;32m═══════════════════════════════════════════════════════════════\033[0m"
+            # Recreate agent to reset in-memory conversation history
+            agent = await create_agent(client, model_name=model_name)
+            msg = (
+                f"[bold green]🔄 Started new session[/]\n"
+                f"[dim]Session ID : {session_id}[/dim]\n"
+                f"[dim]Trace Log  : {session_file}[/dim]"
             )
-            print("\033[1;32m🔄 Started new session\033[0m")
-            print(f"\033[2mSession ID : {session_id}\033[0m")
-            print(f"\033[2mTrace Log  : {session_file}\033[0m")
-            print(
-                "\033[1;32m═══════════════════════════════════════════════════════════════\033[0m\n"
-            )
+            console.print(Panel(msg, border_style="green"))
             continue
 
         if query == "/status":
-            print("\n\033[1;34m[Session Status]\033[0m")
-            print(f"  MCP Server : {mcp_label}")
-            print(f"  Tools      : {tool_count} loaded")
-            print(f"  Session ID : {session_id}")
-            print(f"  Trace Log  : {session_file}")
-            print(f"  Model      : {model_name}")
-            print("  Tracer     : OpenTelemetry (dspy)\n")
+            info = (
+                f"[bold]MCP Server[/] : {mcp_label}\n"
+                f"[bold]Tools[/]      : {tool_count} loaded\n"
+                f"[bold]Session ID[/] : {session_id}\n"
+                f"[bold]Trace Log[/]  : {session_file}\n"
+                f"[bold]Model[/]      : {model_name}\n"
+                f"[bold]Framework[/]  : Agno (async MCP)"
+            )
+            console.print(Panel(info, title="Session Status", border_style="cyan"))
             continue
 
         if query == "/tools":
-            print(f"\n\033[1;34m[Available MCP Tools ({tool_count})]\033[0m")
+            tools_list = []
             for t in tools_resp.tools:
                 desc = (t.description or "").strip().split("\n")[0]
-                print(f"  • \033[1m{t.name}\033[0m: {desc}")
-            print()
+                tools_list.append(f"• [bold]{t.name}[/]: {desc}")
+            console.print(Panel("\n".join(tools_list), title=f"Available MCP Tools ({tool_count})", border_style="blue"))
             continue
 
         if query == "/clear":
-            print("\033[2J\033[H", end="")
+            console.clear()
             print_banner(session_id, session_file, mcp_label, tool_count, model_name)
             continue
 
         if query in ("/help", "/?"):
-            print("\n\033[1;34m[Available Commands]\033[0m")
-            print("  /new [id]   - Reset context and rotate session trace log")
-            print("  /status     - Show current session configuration and MCP target")
-            print("  /tools      - List all discovered tools from the MCP server")
-            print("  /clear      - Clear terminal screen")
-            print("  exit / quit - Exit REPL\n")
+            help_text = (
+                "• [bold]/new [id][/]   - Reset context and rotate session trace log\n"
+                "• [bold]/status[/]     - Show current session configuration and MCP target\n"
+                "• [bold]/tools[/]      - List all discovered tools from the MCP server\n"
+                "• [bold]/clear[/]      - Clear terminal screen\n"
+                "• [bold]exit / quit[/] - Exit REPL"
+            )
+            console.print(Panel(help_text, title="Available Commands", border_style="cyan"))
             continue
 
-        print("\033[2mQuerying tools and formulating response...\033[0m")
         try:
             res = await execute_turn(
                 query,
-                client=client,
+                agent=agent,
                 session_id=session_id,
                 session_file=session_file,
                 mcp_label=mcp_label,
-                model_name=model_name,
             )
-            if res.tools_called:
-                print(f"\033[2m🔧 Tools invoked: {', '.join(t.name for t in res.tools_called)}\033[0m")
-            print("\n" + res.output + "\n")
+            display_turn(res)
         except Exception as exc:  # noqa: BLE001
-            print(f"\033[1;31mError during execution: {exc}\033[0m\n")
+            console.print(f"[bold red]Error during execution: {exc}[/]\n")

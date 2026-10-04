@@ -1,4 +1,4 @@
-"""CLI entrypoint for traced-agent / traced-dspy."""
+"""CLI entrypoint for traced-agent powered by Agno."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ import sys
 import uuid
 from pathlib import Path
 
-from traced_agent.agent import DEFAULT_MODEL, execute_turn
+from traced_agent.agent import DEFAULT_MODEL, create_agent, execute_turn
 from traced_agent.client import connect_mcp
-from traced_agent.repl import run_repl
+from traced_agent.repl import display_turn, run_repl
 from traced_agent.telemetry import setup_telemetry
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="traced-agent",
-        description="Minimal DSPy ReAct agent instrumented with OpenTelemetry for any MCP server.",
+        description="Minimal Agno agent harness instrumented with OpenTelemetry for any MCP server.",
     )
     parser.add_argument("prompt", nargs="?", default=None, help="Optional one-shot query")
     parser.add_argument(
@@ -30,7 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "-m",
         "--model",
         default=DEFAULT_MODEL,
-        help=f"Model name for the DSPy agent (default: {DEFAULT_MODEL})",
+        help=f"Model name for the agent (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--mcp",
@@ -85,17 +85,15 @@ async def async_main(args: argparse.Namespace) -> None:
         else:
             session_file = session_dir / f"trace_{session_id}.jsonl"
             print(f"\033[1;34m[{label}]\033[0m Query: {args.prompt}")
+            agent = await create_agent(client, model_name=args.model)
             res = await execute_turn(
                 args.prompt,
-                client=client,
+                agent=agent,
                 session_id=session_id,
                 session_file=session_file,
                 mcp_label=label,
-                model_name=args.model,
             )
-            if res.tools_called:
-                print(f"\033[2m🔧 Tools invoked: {', '.join(t.name for t in res.tools_called)}\033[0m")
-            print("\n" + res.output)
+            display_turn(res)
             print(f"\n\033[2mTrace recorded to {session_file}\033[0m")
 
 
