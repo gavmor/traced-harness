@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from deepeval.metrics import ToolCorrectnessMetric
 from deepeval.models.base_model import DeepEvalBaseLLM
 from deepeval.test_case import LLMTestCase, ToolCall, ToolCallParams
@@ -181,3 +182,14 @@ def test_clean_trace_full_pass() -> None:
     assert report.first_failure_turn is None
     assert len(report.failed_tool_calls) == 0
     assert report.error_rate == 0.0
+
+
+@pytest.mark.asyncio
+async def test_agent_history_in_context_configured() -> None:
+    """Validate that create_agent configures Agno to maintain conversation history in context."""
+    from traced_harness.agent import create_agent
+
+    agent = await create_agent()
+    assert agent.add_history_to_context is True, (
+        "Agent must have add_history_to_context=True to maintain context across multi-turn sessions"
+    )

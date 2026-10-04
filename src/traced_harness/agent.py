@@ -83,6 +83,8 @@ async def create_agent(
         tools=tools if tools else None,
         instructions=instructions_list if instructions_list else None,
         markdown=True,
+        add_history_to_context=True,
+        num_history_runs=6,
     )
 
 
