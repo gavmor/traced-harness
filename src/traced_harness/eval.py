@@ -89,10 +89,10 @@ class TraceTurn:
             raise ImportError(
                 "deepeval is not installed. Install it with: uv add --group dev deepeval"
             )
-        return LLMTestCase(
-            input=self.input,
-            actual_output=self.actual_output,
-            tools_called=[
+        kwargs: dict[str, Any] = {
+            "input": self.input,
+            "actual_output": self.actual_output,
+            "tools_called": [
                 ToolCall(
                     name=t.name,
                     input_parameters=t.input_parameters,
@@ -100,8 +100,9 @@ class TraceTurn:
                 )
                 for t in self.tools_called
             ],
-            additional_metadata=self.additional_metadata,
-        )
+            "metadata": self.additional_metadata,
+        }
+        return LLMTestCase(**kwargs)
 
 
 @dataclass
