@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+
+# Local databases
+traces.db
+
+# Test artifacts
+.deepeval/
+.pytest_cache/
