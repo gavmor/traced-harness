@@ -91,6 +91,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exit with code 1 if evaluated trace contains peripheral tool errors",
     )
     parser.add_argument(
+        "--no-stop-on-first-failure",
+        action="store_false",
+        dest="stop_at_first_failure",
+        default=True,
+        help="Do not stop evaluation at first failure (evaluate all turns despite cascade pollution)",
+    )
+    parser.add_argument(
         "--no-skills",
         action="store_true",
         help="Disable automatic discovery of local/global skills",
@@ -137,7 +144,11 @@ async def async_main(args: argparse.Namespace) -> None:
     if getattr(args, "eval_trace", None):
         from traced_harness.eval import display_trace_report, evaluate_trace
 
-        report = evaluate_trace(args.eval_trace)
+        stop_at_first_failure = getattr(args, "stop_at_first_failure", True)
+        report = evaluate_trace(
+            args.eval_trace,
+            stop_at_first_failure=stop_at_first_failure,
+        )
         display_trace_report(report)
         if getattr(args, "fail_on_errors", False) and report.failed_tool_calls:
             sys.exit(1)

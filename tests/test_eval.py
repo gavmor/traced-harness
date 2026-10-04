@@ -74,13 +74,74 @@ def test_load_and_evaluate_trace(tmp_path: Path):
     assert report.error_rate == 0.5
 
 
+def test_stop_at_first_failure_cascade_pruning(tmp_path: Path):
+    trace_file = tmp_path / "multi_turn_trace.jsonl"
+    turn0 = {
+        "input": "Turn 0 prompt",
+        "actual_output": "OK 0",
+        "tools_called": [
+            {
+                "name": "get_structure_stats",
+                "input_parameters": {"structure_name": "Shipyard"},
+                "output": '{"hp": 5000}',
+            }
+        ],
+    }
+    turn1 = {
+        "input": "Turn 1 prompt",
+        "actual_output": "FAIL 1",
+        "tools_called": [
+            {
+                "name": "get_map_intel",
+                "input_parameters": {"map_name": "BadHex"},
+                "output": '{"error": "404 Not Found"}',
+            }
+        ],
+    }
+    turn2 = {
+        "input": "Turn 2 prompt (polluted by turn 1)",
+        "actual_output": "FAIL 2",
+        "tools_called": [
+            {
+                "name": "get_map_intel",
+                "input_parameters": {"map_name": "AnotherBadHex"},
+                "output": '{"error": "500 Internal Error"}',
+            }
+        ],
+    }
+    with open(trace_file, "w") as f:
+        f.writelines(json.dumps(t) + "\n" for t in (turn0, turn1, turn2))
+
+    # With stop_at_first_failure=True (default), stop evaluation at turn 1
+    report = evaluate_trace(trace_file, stop_at_first_failure=True)
+    assert report.total_turns == 3
+    assert report.evaluated_turns == 2
+    assert report.polluted_turns_count == 1
+    assert report.first_failure_turn == 1
+    # Only 1 tool failure recorded (turn 2 is pruned, avoiding symptom double-counting)
+    assert len(report.failed_tool_calls) == 1
+    assert report.failed_tool_calls[0][1].name == "get_map_intel"
+    assert report.failed_tool_calls[0][1].input_parameters == {"map_name": "BadHex"}
+
+    # With stop_at_first_failure=False, all turns are evaluated
+    full_report = evaluate_trace(trace_file, stop_at_first_failure=False)
+    assert full_report.total_turns == 3
+    assert full_report.evaluated_turns == 3
+    assert full_report.polluted_turns_count == 0
+    assert len(full_report.failed_tool_calls) == 2
+
+
 def test_parse_args_eval_subcommand(tmp_path: Path):
     dummy_trace = tmp_path / "dummy.jsonl"
     dummy_trace.touch()
 
     args1 = parse_args(["eval", str(dummy_trace)])
     assert args1.eval_trace == dummy_trace
+    assert args1.stop_at_first_failure is True
 
-    args2 = parse_args(["--eval", str(dummy_trace), "--fail-on-errors"])
+    args2 = parse_args(
+        ["--eval", str(dummy_trace), "--fail-on-errors", "--no-stop-on-first-failure"]
+    )
     assert args2.eval_trace == dummy_trace
     assert args2.fail_on_errors is True
+    assert args2.stop_at_first_failure is False
