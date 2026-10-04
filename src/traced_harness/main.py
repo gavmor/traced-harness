@@ -79,10 +79,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Pre-activate a specific skill for the session (repeatable)",
     )
     parser.add_argument(
+        "--eval",
+        dest="eval_trace",
+        type=Path,
+        default=None,
+        help="Evaluate an existing session trace JSONL file and display peripheral health",
+    )
+    parser.add_argument(
+        "--fail-on-errors",
+        action="store_true",
+        help="Exit with code 1 if evaluated trace contains peripheral tool errors",
+    )
+    parser.add_argument(
         "--no-skills",
         action="store_true",
         help="Disable automatic discovery of local/global skills",
     )
+
+    # Allow 'traced-harness eval <file>' as well as 'traced-harness --eval <file>'
+    effective_argv = list(argv) if argv is not None else sys.argv[1:]
+    if effective_argv and effective_argv[0] == "eval":
+        eval_path = effective_argv[1] if len(effective_argv) > 1 else None
+        remaining = effective_argv[2:]
+        parsed = parser.parse_args(remaining)
+        if eval_path:
+            parsed.eval_trace = Path(eval_path)
+        return parsed
+
     parsed = parser.parse_args(argv)
     # Expose both .skill and .skills for convenience
     parsed.skills = parsed.skill
@@ -111,6 +134,15 @@ async def _resolve_mcp_client(
 
 
 async def async_main(args: argparse.Namespace) -> None:
+    if getattr(args, "eval_trace", None):
+        from traced_harness.eval import display_trace_report, evaluate_trace
+
+        report = evaluate_trace(args.eval_trace)
+        display_trace_report(report)
+        if getattr(args, "fail_on_errors", False) and report.failed_tool_calls:
+            sys.exit(1)
+        return
+
     setup_telemetry()
     session_id = args.session_id or uuid.uuid4().hex[:12]
     session_dir = args.session_dir or (Path.cwd() / "sessions")
