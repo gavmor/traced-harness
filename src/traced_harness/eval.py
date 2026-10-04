@@ -275,7 +275,7 @@ def display_trace_report(report: TraceReport, console: Console | None = None) ->
 
     if report.failed_tool_calls:
         err_table = Table(
-            title="[bold red]Root Cause: First Failed Peripheral Call[/]",
+            title="[bold red]First Observed Failure: Peripheral Tool Error[/]",
             border_style="red",
             show_header=True,
         )
