@@ -15,6 +15,13 @@ from agno.tools.mcp import MCPTools
 from mcp.client import Client
 from opentelemetry import trace
 
+from traced_harness.skills import (
+    Skill,
+    activate_skill,
+    build_skill_instructions,
+    get_registered_skills,
+    register_skills,
+)
 from traced_harness.telemetry import get_tracer
 
 tracer = get_tracer("traced.harness.agno")
@@ -36,6 +43,7 @@ class TurnResult:
     tools_called: list[ToolExecution] = field(default_factory=list)
     session_id: str = ""
     timestamp: str = ""
+    skills_active: list[str] = field(default_factory=list)
 
 
 def get_model(model_name: str = DEFAULT_MODEL) -> Gemini:
@@ -47,15 +55,33 @@ def get_model(model_name: str = DEFAULT_MODEL) -> Gemini:
     return Gemini(id=clean_name, api_key=api_key)
 
 
-async def create_agent(client: Client, model_name: str = DEFAULT_MODEL) -> Agent:
-    """Create an Agno agent wired to the active MCP client session."""
-    mcp_tools = MCPTools(session=client.session)
-    await mcp_tools.build_tools()
-    mcp_tools._initialized = True
+async def create_agent(
+    client: Client | None = None,
+    model_name: str = DEFAULT_MODEL,
+    skills: list[Skill] | None = None,
+) -> Agent:
+    """Create an Agno agent wired to optional MCP client and discovered skills."""
+    tools: list[Any] = []
+
+    if client is not None:
+        mcp_tools = MCPTools(session=client.session)
+        await mcp_tools.build_tools()
+        mcp_tools._initialized = True
+        tools.append(mcp_tools)
+
+    instructions_list: list[str] = []
+    if skills:
+        register_skills(skills)
+        tools.append(activate_skill)
+        skill_prompt = build_skill_instructions(skills)
+        if skill_prompt:
+            instructions_list.append(skill_prompt)
+
     model = get_model(model_name)
     return Agent(
         model=model,
-        tools=[mcp_tools],
+        tools=tools if tools else None,
+        instructions=instructions_list if instructions_list else None,
         markdown=True,
     )
 
@@ -83,6 +109,7 @@ def log_turn_to_session(
             "timestamp": turn.timestamp,
             "agent": "traced_agno",
             "mcp_server": mcp_label,
+            "skills_active": turn.skills_active,
         },
     }
     with open(session_file, "a", encoding="utf-8") as f:
@@ -95,6 +122,7 @@ async def execute_turn(
     session_id: str,
     session_file: Path | None = None,
     mcp_label: str = "",
+    skills: list[Skill] | None = None,
 ) -> TurnResult:
     """Execute a turn with OpenTelemetry root and child tool spans."""
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
@@ -134,8 +162,15 @@ async def execute_turn(
                 kind=trace.SpanKind.CLIENT,
             ) as tool_span:
                 tool_span.set_attribute("gen_ai.tool.name", tc.name)
-                tool_span.set_attribute("gen_ai.tool.parameters", json.dumps(tc.input_parameters))
+                tool_span.set_attribute(
+                    "gen_ai.tool.parameters", json.dumps(tc.input_parameters)
+                )
                 tool_span.set_attribute("gen_ai.tool.output", tc.output[:2000])
+
+        skills_pool = (
+            skills if skills is not None else list(get_registered_skills().values())
+        )
+        skills_active = [s.name for s in skills_pool if s.active]
 
         turn = TurnResult(
             prompt=prompt,
@@ -143,6 +178,7 @@ async def execute_turn(
             tools_called=tools_called,
             session_id=session_id,
             timestamp=now_iso,
+            skills_active=skills_active,
         )
 
         if session_file:

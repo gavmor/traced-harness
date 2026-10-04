@@ -16,7 +16,9 @@ def test_parse_args_defaults() -> None:
 
 
 def test_parse_args_custom() -> None:
-    args = parse_args(["hello world", "--mcp", "npx test", "-m", "custom-model", "-s", "sess-1"])
+    args = parse_args(
+        ["hello world", "--mcp", "npx test", "-m", "custom-model", "-s", "sess-1"]
+    )
     assert args.prompt == "hello world"
     assert args.mcp == "npx test"
     assert args.model == "custom-model"

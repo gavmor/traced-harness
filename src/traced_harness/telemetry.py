@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -54,3 +55,28 @@ def get_tracer(name: str = "traced.harness.agno") -> trace.Tracer:
     if not _initialized:
         setup_telemetry()
     return trace.get_tracer(name)
+
+
+SKILL_DISCOVERY_SPAN = "skill.discovery"
+SKILL_ACTIVATE_SPAN = "skill.activate"
+
+SKILL_NAME_ATTR = "skill.name"
+SKILL_PATH_ATTR = "skill.path"
+SKILL_CHARS_LOADED_ATTR = "skill.chars_loaded"
+SKILL_MODE_ATTR = "skill.mode"
+
+
+def record_skill_activation_span(
+    name: str,
+    path: str | Path,
+    chars_loaded: int,
+    mode: str = "preload",
+    tracer_name: str = "traced.harness.skills",
+) -> None:
+    """Record an OpenTelemetry span for skill activation."""
+    tracer = get_tracer(tracer_name)
+    with tracer.start_as_current_span(SKILL_ACTIVATE_SPAN) as span:
+        span.set_attribute(SKILL_NAME_ATTR, name)
+        span.set_attribute(SKILL_PATH_ATTR, str(path))
+        span.set_attribute(SKILL_CHARS_LOADED_ATTR, chars_loaded)
+        span.set_attribute(SKILL_MODE_ATTR, mode)
