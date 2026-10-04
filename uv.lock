@@ -1411,7 +1411,7 @@ wheels = [
 ]
 
 [[package]]
-name = "traced-agent"
+name = "traced-harness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

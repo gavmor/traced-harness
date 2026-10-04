@@ -12,7 +12,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 _initialized = False
 
 
-def setup_telemetry(service_name: str = "traced-agent") -> TracerProvider:
+def setup_telemetry(service_name: str = "traced-harness") -> TracerProvider:
     """Initialize OpenTelemetry TracerProvider with optional OTLP export."""
     global _initialized
     if _initialized:
@@ -49,7 +49,7 @@ def setup_telemetry(service_name: str = "traced-agent") -> TracerProvider:
     return provider
 
 
-def get_tracer(name: str = "traced.agent.dspy") -> trace.Tracer:
+def get_tracer(name: str = "traced.harness.agno") -> trace.Tracer:
     """Return a configured OpenTelemetry tracer."""
     if not _initialized:
         setup_telemetry()

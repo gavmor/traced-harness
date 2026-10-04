@@ -1,6 +1,6 @@
-# traced-agent
+# traced-harness
 
-Minimal, production-ready agent harness powered by [Agno](https://github.com/agno-agi/agno) and instrumented with OpenTelemetry to connect to any Model Context Protocol (MCP) server.
+Minimal, production-ready agent evaluation and testing harness powered by [Agno](https://github.com/agno-agi/agno) and instrumented with OpenTelemetry to connect to any Model Context Protocol (MCP) server.
 
 ## Features
 
@@ -18,25 +18,25 @@ Minimal, production-ready agent harness powered by [Agno](https://github.com/agn
 
 ```bash
 # Install globally via uv
-uv tool install --editable /home/user/Desktop/gavmor/traced-agent
+uv tool install --editable /home/user/Desktop/gavmor/traced-harness
 ```
 
-This registers `traced-agent` (and aliases `traced-agno`, `traced-dspy`) on `$PATH`.
+This registers `traced-harness` (and aliases `traced-agent`, `traced-agno`, `traced-dspy`) on `$PATH`.
 
 ## Usage
 
 ### Auto-detection
 If running in a project with `.mcp.json` or `MCP_SERVER` defined, simply run:
 ```bash
-traced-agent
+traced-harness
 ```
 
 ### Connect over stdio
 ```bash
-traced-agent --mcp "uv run foxhole mcp"
+traced-harness --mcp "uv run foxhole mcp"
 ```
 
 ### One-shot query
 ```bash
-traced-agent "What is the health of a Devitt Mark III?"
+traced-harness "What is the health of a Devitt Mark III?"
 ```

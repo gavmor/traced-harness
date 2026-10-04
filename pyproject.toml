@@ -1,5 +1,5 @@
 [project]
-name = "traced-agent"
+name = "traced-harness"
 version = "0.1.0"
 description = "Minimal Agno agent harness with OpenTelemetry instrumentation and MCP integration"
 readme = "README.md"
@@ -19,9 +19,10 @@ dependencies = [
 ]
 
 [project.scripts]
-traced-agent = "traced_agent.main:main"
-traced-agno = "traced_agent.main:main"
-traced-dspy = "traced_agent.main:main"
+traced-harness = "traced_harness.main:main"
+traced-agent = "traced_harness.main:main"
+traced-agno = "traced_harness.main:main"
+traced-dspy = "traced_harness.main:main"
 
 [build-system]
 requires = ["uv_build>=0.12.2,<0.13.0"]
@@ -33,3 +34,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.9.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+

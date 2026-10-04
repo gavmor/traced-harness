@@ -8,15 +8,15 @@ import sys
 import uuid
 from pathlib import Path
 
-from traced_agent.agent import DEFAULT_MODEL, create_agent, execute_turn
-from traced_agent.client import connect_mcp
-from traced_agent.repl import display_turn, run_repl
-from traced_agent.telemetry import setup_telemetry
+from traced_harness.agent import DEFAULT_MODEL, create_agent, execute_turn
+from traced_harness.client import connect_mcp
+from traced_harness.repl import display_turn, run_repl
+from traced_harness.telemetry import setup_telemetry
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="traced-agent",
+        prog="traced-harness",
         description="Minimal Agno agent harness instrumented with OpenTelemetry for any MCP server.",
     )
     parser.add_argument("prompt", nargs="?", default=None, help="Optional one-shot query")

@@ -15,9 +15,9 @@ from agno.tools.mcp import MCPTools
 from mcp.client import Client
 from opentelemetry import trace
 
-from traced_agent.telemetry import get_tracer
+from traced_harness.telemetry import get_tracer
 
-tracer = get_tracer("traced.agent.agno")
+tracer = get_tracer("traced.harness.agno")
 
 DEFAULT_MODEL = os.environ.get("AGENT_MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
@@ -105,7 +105,7 @@ async def execute_turn(
         kind=trace.SpanKind.INTERNAL,
     ) as span:
         span.set_attribute("gen_ai.system", "agno")
-        span.set_attribute("gen_ai.agent.name", "traced-agent")
+        span.set_attribute("gen_ai.agent.name", "traced-harness")
         span.set_attribute("gen_ai.session.id", session_id)
         span.set_attribute("gen_ai.prompt", prompt)
         span.set_attribute("gen_ai.model", model_name)

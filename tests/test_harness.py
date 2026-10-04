@@ -2,9 +2,9 @@
 
 from mcp.client.stdio import StdioServerParameters
 
-from traced_agent.client import parse_mcp_target
-from traced_agent.main import parse_args
-from traced_agent.telemetry import get_tracer, setup_telemetry
+from traced_harness.client import parse_mcp_target
+from traced_harness.main import parse_args
+from traced_harness.telemetry import get_tracer, setup_telemetry
 
 
 def test_parse_args_defaults() -> None:

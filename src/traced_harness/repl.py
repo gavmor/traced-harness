@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from traced_agent.agent import DEFAULT_MODEL, TurnResult, create_agent, execute_turn
+from traced_harness.agent import DEFAULT_MODEL, TurnResult, create_agent, execute_turn
 
 console = Console()
 
@@ -25,7 +25,7 @@ def print_banner(
     model_name: str,
 ) -> None:
     header = (
-        f"[bold green]🔍 traced-agent (Agno + OpenTelemetry + MCP)[/]\n"
+        f"[bold green]🔍 traced-harness (Agno + OpenTelemetry + MCP)[/]\n"
         f"[dim]MCP Server : {mcp_label} ({tool_count} tools available)[/dim]\n"
         f"[dim]Session ID : {session_id}[/dim]\n"
         f"[dim]Trace Log  : {session_file}[/dim]\n"
