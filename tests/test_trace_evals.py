@@ -185,11 +185,55 @@ def test_clean_trace_full_pass() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_history_in_context_configured() -> None:
-    """Validate that create_agent configures Agno to maintain conversation history in context."""
+async def test_multi_turn_conversational_context_retention() -> None:
+    """Validate that the agent harness actually retains conversational context across turns in behavior."""
+    from agno.models.google import Gemini
+    from agno.models.response import ModelResponse
+
     from traced_harness.agent import create_agent
 
+    class ContextAwareEvaluatorModel(Gemini):
+        id: str = "context-aware-evaluator"
+
+        async def ainvoke(self, *args: Any, **kwargs: Any) -> ModelResponse:
+            messages = kwargs.get("messages", [])
+            prior_user_prompts = [
+                getattr(m, "content", "")
+                for m in messages
+                if getattr(m, "role", "") == "user"
+            ]
+            full_context = " ".join(prior_user_prompts)
+            if "Spatha" in full_context and len(prior_user_prompts) > 1:
+                return ModelResponse(
+                    content="The operation vehicle is the Colonial Spatha.",
+                    role="assistant",
+                )
+            elif "Spatha" in full_context:
+                return ModelResponse(
+                    content="Understood, Colonial Spatha noted.",
+                    role="assistant",
+                )
+            return ModelResponse(
+                content="I do not know what vehicle we are discussing.",
+                role="assistant",
+            )
+
     agent = await create_agent()
-    assert agent.add_history_to_context is True, (
-        "Agent must have add_history_to_context=True to maintain context across multi-turn sessions"
+    agent.model = ContextAwareEvaluatorModel(id="test", api_key="fake")
+
+    # Turn 0: Establish context
+    await agent.arun(
+        "The focus of our logistical plan is the Colonial Spatha.",
+        session_id="eval-sess-1",
+    )
+
+    # Turn 1: Ask context-dependent question without repeating the subject
+    res = await agent.arun(
+        "What vehicle did I say is the focus of this operation?",
+        session_id="eval-sess-1",
+    )
+    output = str(res.content)
+
+    assert "Spatha" in output, (
+        f"Expected agent to recall 'Spatha' from Turn 0 context, but got: {output}"
     )

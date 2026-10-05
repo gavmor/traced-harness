@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.agent import Agent
+from agno.db.in_memory import InMemoryDb
 from agno.models.google import Gemini
 from agno.tools.mcp import MCPTools
 from mcp.client import Client
@@ -80,6 +81,7 @@ async def create_agent(
     model = get_model(model_name)
     return Agent(
         model=model,
+        db=InMemoryDb(),
         tools=tools if tools else None,
         instructions=instructions_list if instructions_list else None,
         markdown=True,
