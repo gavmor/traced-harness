@@ -90,12 +90,23 @@ class MemoryToolContract:
     ``tools`` are explicit tool names the agent may call; ``context_hooks`` are
     implicit context-engine integration points (prefetch/compaction); and
     ``system_prompt`` is the durable-memory contract injected into the prompt.
+
+    ``retrieval_tools`` narrows ``tools`` to the ones that *read* memory.
+    Retrieval is what the benchmark counts and times — a write is not a
+    recall, and counting one inflates the column that is supposed to prove
+    the provider was consulted. A provider whose tools are all reads can
+    leave it empty, and :meth:`recall_tools` falls back to ``tools``.
     """
 
     provider: str
     tools: list[str] = field(default_factory=list)
     context_hooks: list[str] = field(default_factory=list)
     system_prompt: str = ""
+    retrieval_tools: list[str] = field(default_factory=list)
+
+    def recall_tools(self) -> list[str]:
+        """The tools whose calls count as retrievals."""
+        return list(self.retrieval_tools or self.tools)
 
 
 class MemoryProviderAdapter(ABC):
@@ -434,12 +445,15 @@ def make_memory_tool_hook(contract: MemoryToolContract) -> Any:
     would only ever report zero. Each measured call is appended to the active
     turn's ``retrievals`` list via the harness's turn collector.
 
-    Non-memory tools pass straight through. The hook is async because every
+    Only ``contract.recall_tools()`` is measured. Everything else — the
+    provider's own writes included — passes straight through: a store or a
+    delete is not a retrieval, and recording it as one would overstate how
+    much memory the agent actually consulted. The hook is async because every
     memory tool reaches the agent over MCP, whose entrypoints are coroutines;
     Agno skips async hooks for synchronous tools, which by construction are
     never the provider's.
     """
-    tool_names = set(contract.tools)
+    tool_names = set(contract.recall_tools())
     provider = contract.provider
 
     async def memory_retrieval_hook(

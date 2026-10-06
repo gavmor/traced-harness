@@ -268,6 +268,37 @@ def test_hook_ignores_tools_that_are_not_this_providers():
     assert RETRIEVALS_KEY not in asyncio.run(_run())
 
 
+def test_hook_does_not_count_the_providers_own_writes_as_retrievals():
+    """A store is not a recall. Counting it inflates `n_retrievals`, the
+    column that exists to prove the provider was actually consulted."""
+    hook = make_memory_tool_hook(
+        MemoryToolContract(
+            provider="fakemem",
+            tools=["fakemem_recall", "fakemem_put"],
+            retrieval_tools=["fakemem_recall"],
+        )
+    )
+
+    async def _call(**kwargs):
+        return "7"  # the new entry's id
+
+    async def _run():
+        with turn_telemetry() as collected:
+            await hook("fakemem_put", _call, {"text": "a fact"})
+        return collected
+
+    assert RETRIEVALS_KEY not in asyncio.run(_run())
+
+
+def test_a_contract_without_retrieval_tools_measures_all_of_them():
+    """Backward compatible: a read-only provider need not restate its tools."""
+    contract = MemoryToolContract(provider="p", tools=["a", "b"])
+    assert contract.recall_tools() == ["a", "b"]
+    assert MemoryToolContract(
+        provider="p", tools=["a", "b"], retrieval_tools=["a"]
+    ).recall_tools() == ["a"]
+
+
 def test_hook_propagates_tool_failures():
     """A provider that errored did not retrieve; the turn must not say it did."""
     hook = _hook_for()
