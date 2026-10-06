@@ -23,11 +23,20 @@ from traced_harness.skills import (
     get_registered_skills,
     register_skills,
 )
-from traced_harness.telemetry import get_tracer
+from traced_harness.telemetry import (
+    estimate_tokens,
+    get_tracer,
+    turn_telemetry,
+)
 
 tracer = get_tracer("traced.harness.agno")
 
 DEFAULT_MODEL = os.environ.get("AGENT_MODEL_NAME", "gemini-3.1-flash-lite-preview")
+
+#: Turn-metadata key for the model's own output-token count.
+GENERATED_TOKENS_KEY = "generated_tokens"
+#: Turn-metadata key for the model's own input-token count.
+PROMPT_TOKENS_KEY = "prompt_tokens"
 
 
 @dataclass
@@ -45,6 +54,29 @@ class TurnResult:
     session_id: str = ""
     timestamp: str = ""
     skills_active: list[str] = field(default_factory=list)
+    #: Measurements contributed by whatever ran during the turn — the model's
+    #: own token counts, plus anything a peripheral recorded through
+    #: :func:`~traced_harness.telemetry.record_turn_metadata`. The harness
+    #: carries this through to the trace without interpreting it.
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _model_token_counts(resp: Any) -> tuple[int | None, int | None]:
+    """Real (prompt, generated) token counts the model provider reported.
+
+    Returns ``None`` for a count the provider did not supply, so the caller
+    can tell "the model said zero" from "the model said nothing" and fall back
+    to an estimate only in the latter case.
+    """
+    metrics = getattr(resp, "metrics", None)
+    if metrics is None:
+        return None, None
+    prompt = getattr(metrics, "input_tokens", None)
+    generated = getattr(metrics, "output_tokens", None)
+    return (
+        int(prompt) if prompt else None,
+        int(generated) if generated else None,
+    )
 
 
 def get_model(model_name: str = DEFAULT_MODEL) -> Gemini:
@@ -76,6 +108,7 @@ async def create_agent(
     peripherals the harness has no first-class support for.
     """
     tools: list[Any] = []
+    tool_hooks: list[Any] = []
 
     if client is not None:
         mcp_tools = MCPTools(session=client.session)
@@ -95,6 +128,7 @@ async def create_agent(
         # Imported lazily: the harness core must not depend on the memory module.
         from traced_harness.memory import (
             build_memory_instructions,
+            make_memory_tool_hook,
             register_memory_tools,
         )
 
@@ -108,6 +142,9 @@ async def create_agent(
         )
         if memory_prompt:
             instructions_list.append(memory_prompt)
+        # Measure the provider's recall calls where they actually happen, so
+        # retrieval latency is a timed number rather than a post-hoc zero.
+        tool_hooks.append(make_memory_tool_hook(contract))
 
     for instruction in extra_instructions or []:
         if instruction:
@@ -118,6 +155,7 @@ async def create_agent(
         model=model,
         db=InMemoryDb(),
         tools=tools if tools else None,
+        tool_hooks=tool_hooks if tool_hooks else None,
         instructions=instructions_list if instructions_list else None,
         markdown=True,
         add_history_to_context=True,
@@ -149,6 +187,7 @@ def log_turn_to_session(
             "agent": "traced_agno",
             "mcp_server": mcp_label,
             "skills_active": turn.skills_active,
+            **(turn.metadata or {}),
         },
     }
     with open(session_file, "a", encoding="utf-8") as f:
@@ -178,9 +217,30 @@ async def execute_turn(
         span.set_attribute("gen_ai.model", model_name)
         span.set_attribute("mcp.server.target", mcp_label)
 
-        resp = await agent.arun(prompt, session_id=session_id)
+        # Anything running under this turn — an MCP memory tool, a context
+        # hook — records its measurements into `collected`; see
+        # `traced_harness.telemetry.turn_telemetry`.
+        with turn_telemetry() as collected:
+            resp = await agent.arun(prompt, session_id=session_id)
+
         output_text = str(resp.content) if resp and resp.content else ""
         span.set_attribute("gen_ai.completion", output_text)
+
+        # Prefer the provider's own tokenizer counts; `estimate_tokens` is the
+        # documented fallback for a model that reports none.
+        prompt_tokens, generated_tokens = _model_token_counts(resp)
+        collected[PROMPT_TOKENS_KEY] = (
+            prompt_tokens if prompt_tokens is not None else estimate_tokens(prompt)
+        )
+        collected[GENERATED_TOKENS_KEY] = (
+            generated_tokens
+            if generated_tokens is not None
+            else estimate_tokens(output_text)
+        )
+        span.set_attribute("gen_ai.usage.input_tokens", collected[PROMPT_TOKENS_KEY])
+        span.set_attribute(
+            "gen_ai.usage.output_tokens", collected[GENERATED_TOKENS_KEY]
+        )
 
         tools_called: list[ToolExecution] = []
         for t in resp.tools or []:
@@ -218,6 +278,7 @@ async def execute_turn(
             session_id=session_id,
             timestamp=now_iso,
             skills_active=skills_active,
+            metadata=collected,
         )
 
         if session_file:

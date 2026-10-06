@@ -50,7 +50,12 @@ from traced_harness.skills import (
     get_registered_external_tools,
     register_external_tools,
 )
-from traced_harness.telemetry import get_tracer, measured_span
+from traced_harness.telemetry import (
+    append_turn_record,
+    estimate_tokens,
+    get_tracer,
+    measured_span,
+)
 
 __all__ = [
     "MEMORY_METADATA_KEY",
@@ -62,6 +67,8 @@ __all__ = [
     "consolidation_span",
     "get_registered_memory_tools",
     "make_memory_session_runner",
+    "make_memory_tool_hook",
+    "make_memory_turn_executor",
     "record_memory_injection",
     "register_memory_tools",
     "retrieval_span",
@@ -69,6 +76,11 @@ __all__ = [
 
 #: Slot in a turn's ``additional_metadata`` where memory records are written.
 MEMORY_METADATA_KEY = "memory"
+
+#: Turn-metadata keys this module writes through the harness's turn collector.
+RETRIEVALS_KEY = "retrievals"
+INJECTION_KEY = "injection"
+PROVIDER_KEY = "provider"
 
 
 @dataclass
@@ -353,3 +365,153 @@ def make_memory_session_runner(
         metadata_key=MEMORY_METADATA_KEY,
         between_sessions_span=MEMORY_CONSOLIDATION_SPAN,
     )
+
+
+# ---------------------------------------------------------------------------
+# Turn telemetry.
+#
+# Registering a provider's tool names is not enough to measure it: the recall
+# happens inside the agent's tool loop, where neither the runner nor the
+# caller can see it. These two pieces close that gap — a tool hook that times
+# the real call, and a turn executor that totals what the turn cost.
+# ---------------------------------------------------------------------------
+
+#: Argument names a memory tool is likely to carry its query under, in
+#: preference order. Falls back to the whole argument dict, so an unfamiliar
+#: tool still records *something* identifying rather than an empty query.
+QUERY_ARG_NAMES = ("query", "q", "question", "search", "text", "prompt", "key")
+
+
+def _retrieval_query(arguments: dict[str, Any]) -> str:
+    for name in QUERY_ARG_NAMES:
+        value = arguments.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return json.dumps(arguments, default=str, sort_keys=True)
+
+
+def _passages(result: Any) -> list[str]:
+    """Normalize a memory tool's return value into retrieved passages.
+
+    MCP tools answer with text, so a JSON payload arrives as a string: parse
+    it before deciding, otherwise a list of five memories is miscounted as one
+    passage. Anything genuinely opaque counts as a single passage, and an
+    empty result as none — a provider that found nothing must not be recorded
+    as having retrieved something.
+    """
+    if result is None:
+        return []
+    if isinstance(result, str):
+        text = result.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except (ValueError, TypeError):
+            return [text]
+        if isinstance(parsed, str):
+            return [parsed] if parsed.strip() else []
+        return _passages(parsed)
+    if isinstance(result, dict):
+        for key in ("passages", "results", "memories", "matches", "items"):
+            inner = result.get(key)
+            if isinstance(inner, list):
+                return _passages(inner)
+        return [json.dumps(result, default=str)]
+    if isinstance(result, (list, tuple)):
+        out: list[str] = []
+        for item in result:
+            out.extend(_passages(item))
+        return out
+    return [str(result)]
+
+
+def make_memory_tool_hook(contract: MemoryToolContract) -> Any:
+    """An Agno ``tool_hooks`` entry that measures this provider's recall calls.
+
+    Wrapping the *actual* invocation is what makes ``latency_ms`` a measured
+    number; reconstructing a retrieval record after the agent has returned
+    would only ever report zero. Each measured call is appended to the active
+    turn's ``retrievals`` list via the harness's turn collector.
+
+    Non-memory tools pass straight through. The hook is async because every
+    memory tool reaches the agent over MCP, whose entrypoints are coroutines;
+    Agno skips async hooks for synchronous tools, which by construction are
+    never the provider's.
+    """
+    tool_names = set(contract.tools)
+    provider = contract.provider
+
+    async def memory_retrieval_hook(
+        function_name: str,
+        function_call: Any,
+        arguments: dict[str, Any],
+    ) -> Any:
+        if function_name not in tool_names:
+            return await function_call(**arguments)
+        with retrieval_span(_retrieval_query(arguments), provider) as measurement:
+            result = await function_call(**arguments)
+            measurement.passages = _passages(result)
+        append_turn_record(RETRIEVALS_KEY, measurement.as_record())
+        return result
+
+    return memory_retrieval_hook
+
+
+def make_memory_turn_executor(
+    agent: Any,
+    adapter: MemoryProviderAdapter,
+) -> TurnExecutor:
+    """A ``TurnExecutor`` whose turns carry this provider's memory telemetry.
+
+    Drop-in replacement for
+    :func:`~traced_harness.session_runner.make_agno_turn_executor` when the
+    peripheral under test is a memory provider. The agent must have been built
+    by :func:`~traced_harness.agent.create_agent` with the same adapter, so its
+    retrieval hook is installed.
+
+    What ends up on each turn's ``metadata``:
+
+    ``retrievals``
+        one record per measured memory-tool call (written by the hook).
+    ``injection``
+        the turn's prompt-token overhead: the provider's standing system-prompt
+        contract plus the passages it put into the context this turn. That is
+        what a memory provider costs per turn over asking the model cold.
+    ``generated_tokens``
+        written by ``execute_turn`` from the model's own usage metrics.
+    """
+    from traced_harness.agent import execute_turn
+
+    contract = adapter.contract()
+    provider = contract.provider
+    # The contract prompt is re-injected on every turn, so it is a per-turn
+    # cost, not a one-off.
+    contract_tokens = estimate_tokens(
+        build_memory_instructions(
+            contract.provider,
+            contract.tools,
+            contract.context_hooks,
+            contract.system_prompt,
+        )
+    )
+
+    async def _executor(prompt: str, session_id: str, peripheral: str) -> Any:
+        turn = await execute_turn(prompt, agent, session_id)
+        retrievals = turn.metadata.get(RETRIEVALS_KEY) or []
+        retrieved_tokens = sum(
+            estimate_tokens(passage)
+            for record in retrievals
+            for passage in record.get("passages", []) or []
+        )
+        base_tokens = estimate_tokens(prompt)
+        turn.metadata[PROVIDER_KEY] = provider
+        turn.metadata[INJECTION_KEY] = record_memory_injection(
+            base_tokens,
+            base_tokens + contract_tokens + retrieved_tokens,
+            provider,
+        )
+        return turn
+
+    return _executor
+
