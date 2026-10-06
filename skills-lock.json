@@ -6,6 +6,18 @@
       "sourceType": "github",
       "skillPath": "skills/deepeval/SKILL.md",
       "computedHash": "1513200bf41565e1bf84146882166bfb772d96887b0733f320eae5aa86443748"
+    },
+    "deepeval-otel": {
+      "source": "confident-ai/deepeval",
+      "sourceType": "github",
+      "skillPath": "skills/deepeval-otel/SKILL.md",
+      "computedHash": "bbbd46914c580715b1b0b1b703c5821923caebc1a88ff1ae7e7e1bacb7ae523c"
+    },
+    "deepeval-tracing": {
+      "source": "confident-ai/deepeval",
+      "sourceType": "github",
+      "skillPath": "skills/deepeval-tracing/SKILL.md",
+      "computedHash": "16efcdf71141d893c6470ff0b0deed66cf5b7cf9f692965298457d42923efeef"
     }
   }
 }
