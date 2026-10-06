@@ -15,6 +15,8 @@ A test bed harness for evaluating agentic peripherals (MCP, skills, etc.)
   - `/skill <name>` - Inspect full markdown and toggle skill activation in current conversation.
   - `/clear` - Clear terminal screen.
 - **Durable Trace Logging**: Writes clean turn-by-turn trace records into `sessions/trace_<id>.jsonl` including active skills and tool execution records for offline evaluation.
+- **Memory Providers (`traced_harness.memory`)**: Durable-memory plugins as a first-class peripheral alongside MCP and skills — a `MemoryProviderAdapter` lifecycle ABC, a tool/context-hook contract injected into the system prompt, and telemetry for retrieval latency, injected-token overhead, and consolidation cost (wall/CPU time + store growth).
+- **Multi-Session Benchmarking (`SessionRunner`)**: Runs an ordered `Scenario` of sessions with distinct `session_id`s, so in-context history is deliberately *not* carried across them and cross-session behaviour must come from the peripheral. Fires a `between_sessions` hook between them and measures its cost. The runner is domain-blind: it depends only on a structural `PeripheralLifecycle` protocol, so it works for any peripheral, not just memory.
 
 ## Installation
 

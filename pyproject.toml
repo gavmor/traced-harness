@@ -31,7 +31,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "deepeval>=4.2.8",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.9.0",
@@ -39,4 +38,9 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# Collect only the project's own tests. Without this, bare `pytest` descends
+# into the vendored skill directories (.agents/, skills/, .claude/, .crush/)
+# and tries to collect their placeholder eval templates, which import
+# deliberately-nonexistent modules (`ai_app`, `metrics`) and error on import.
+testpaths = ["tests"]
 

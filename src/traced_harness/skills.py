@@ -324,53 +324,57 @@ def build_skill_instructions(skills: list[Skill]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Memory-provider registration.
+# External peripheral registration.
 #
-# A memory provider (see ``plugins.MemoryPluginAdapter``) contributes recall
-# tools (``cashew_query``, ``recall``, ...) and/or implicit context-engine
-# hooks (``nachos`` manifest/prefetch, ``chronicle`` compression). These are
-# registered into (a) the agent's system prompt, via
-# ``build_memory_instructions``, and (b) a dispatch registry of active memory
-# tool names, via ``register_memory_tools`` — mirroring the skill registry.
+# A peripheral layered on this harness (a memory plugin, a retrieval service,
+# anything) may contribute explicit tools the agent can call and/or implicit
+# context hooks that need no call. These are registered into (a) the agent's
+# system prompt, via ``build_tool_instructions``, and (b) a dispatch registry
+# of active tool names, via ``register_external_tools`` — mirroring the skill
+# registry. The harness stores the strings; it does not interpret them.
 # ---------------------------------------------------------------------------
 
-_memory_tool_registry: dict[str, str] = {}
+_external_tool_registry: dict[str, str] = {}
 
 
-def register_memory_tools(tools: list[str], provider: str = "") -> None:
-    """Register active memory tool names -> provider in the global registry."""
+def register_external_tools(tools: list[str], source: str = "") -> None:
+    """Register active tool names -> owning source in the global registry."""
     for tool in tools:
-        _memory_tool_registry[tool] = provider
+        _external_tool_registry[tool] = source
 
 
-def get_registered_memory_tools() -> dict[str, str]:
-    """Return the active memory-tool -> provider dispatch registry."""
-    return dict(_memory_tool_registry)
+def get_registered_external_tools() -> dict[str, str]:
+    """Return the active tool -> source dispatch registry."""
+    return dict(_external_tool_registry)
 
 
-def clear_memory_tools() -> None:
-    """Clear the memory-tool registry (used between benchmark suites)."""
-    _memory_tool_registry.clear()
+def clear_external_tools() -> None:
+    """Clear the external-tool registry (used between benchmark suites)."""
+    _external_tool_registry.clear()
 
 
-def build_memory_instructions(
-    provider: str,
+def build_tool_instructions(
+    source: str,
     tools: list[str],
     context_hooks: list[str] | None = None,
     system_prompt: str = "",
+    heading: str = "Peripheral",
 ) -> str:
-    """Construct the system-prompt section describing the active memory
-    provider, its explicit recall tools, and any implicit context hooks.
+    """Construct the system-prompt section describing an external peripheral,
+    its explicit tools, and any implicit context hooks.
+
+    ``heading`` lets the caller name the domain (e.g. "Memory Provider")
+    without the harness knowing what that domain is.
     """
     hooks = context_hooks or []
     if not tools and not hooks and not system_prompt:
         return ""
-    lines = [f"# Memory Provider: {provider}"]
+    lines = [f"# {heading}: {source}"]
     if system_prompt:
         lines.append(system_prompt)
     if tools:
         tool_list = ", ".join(f"`{t}`" for t in tools)
-        lines.append(f"Available memory tools: {tool_list}.")
+        lines.append(f"Available tools: {tool_list}.")
     if hooks:
         hook_list = ", ".join(hooks)
         lines.append(

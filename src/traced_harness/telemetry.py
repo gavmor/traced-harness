@@ -88,38 +88,22 @@ def record_skill_activation_span(
 
 
 # ---------------------------------------------------------------------------
-# Memory-provider telemetry (text-retrieval only; no multimodal/visual spans).
+# Generic measurement spans.
 #
-# These helpers both (a) emit OpenTelemetry spans and (b) return plain-dict
-# records so the Agno turn logger can embed them under a turn's
-# ``additional_metadata["memory"]`` for offline evaluation by ``eval.py``.
+# The harness measures; it does not interpret. A study layered on this
+# instrument supplies its own domain vocabulary (span names, attribute keys)
+# and gets back a plain-dict record it can embed in a turn's
+# ``additional_metadata`` for offline evaluation.
 # ---------------------------------------------------------------------------
 
-MEMORY_TRACER_NAME = "traced.harness.memory"
-
-MEMORY_INJECTION_SPAN = "memory.injection"
-MEMORY_RETRIEVAL_SPAN = "memory.retrieval"
-MEMORY_CONSOLIDATION_SPAN = "memory.consolidation"
-
-MEMORY_PROVIDER_ATTR = "memory.provider"
-MEM_BASE_TOKENS_ATTR = "memory.injection.base_prompt_tokens"
-MEM_INJECTED_TOKENS_ATTR = "memory.injection.post_prompt_tokens"
-MEM_OVERHEAD_TOKENS_ATTR = "memory.injection.overhead_tokens"
-MEM_QUERY_ATTR = "memory.retrieval.query"
-MEM_PASSAGES_ATTR = "memory.retrieval.passage_count"
-MEM_LATENCY_ATTR = "memory.retrieval.latency_ms"
-MEM_WALL_ATTR = "memory.consolidation.wall_seconds"
-MEM_CPU_ATTR = "memory.consolidation.cpu_seconds"
-MEM_DB_BEFORE_ATTR = "memory.consolidation.db_bytes_before"
-MEM_DB_AFTER_ATTR = "memory.consolidation.db_bytes_after"
-MEM_DB_GROWTH_ATTR = "memory.consolidation.db_growth_bytes"
+MEASURE_TRACER_NAME = "traced.harness.measure"
 
 
 def estimate_tokens(text: str, chars_per_token: float = 4.0) -> int:
     """Rough token count heuristic (~4 chars/token) for text-only prompts.
 
-    Callers with an exact tokenizer should pass measured counts to the
-    recording helpers instead of relying on this estimate.
+    Callers with an exact tokenizer should pass measured counts instead of
+    relying on this estimate.
     """
     if not text:
         return 0
@@ -147,139 +131,75 @@ def directory_bytes(*paths: str | Path) -> int:
     return total
 
 
-def record_memory_injection(
-    base_prompt_tokens: int,
-    post_injection_tokens: int,
-    provider: str = "",
-) -> dict[str, int]:
-    """Record the prompt-token overhead added by memory injection on a turn.
-
-    ``base_prompt_tokens`` is the pre-retrieval prompt; ``post_injection_tokens``
-    is the prompt after the memory provider injected recalled context. The
-    returned dict is meant to live under ``additional_metadata["memory"]``.
-    """
-    overhead = max(0, post_injection_tokens - base_prompt_tokens)
-    tracer = get_tracer(MEMORY_TRACER_NAME)
-    with tracer.start_as_current_span(MEMORY_INJECTION_SPAN) as span:
-        span.set_attribute(MEMORY_PROVIDER_ATTR, provider)
-        span.set_attribute(MEM_BASE_TOKENS_ATTR, base_prompt_tokens)
-        span.set_attribute(MEM_INJECTED_TOKENS_ATTR, post_injection_tokens)
-        span.set_attribute(MEM_OVERHEAD_TOKENS_ATTR, overhead)
-    return {
-        "base_tokens": base_prompt_tokens,
-        "injected_tokens": post_injection_tokens,
-        "overhead_tokens": overhead,
-    }
-
-
 @dataclass
-class RetrievalMeasurement:
-    """Mutable handle yielded by :func:`retrieval_span`.
+class SpanMeasurement:
+    """Handle yielded by :func:`measured_span`.
 
-    The caller sets ``passages`` (or ``passage_count``) inside the ``with``
-    block; latency is measured automatically on exit.
+    Wall/CPU time are captured automatically. ``bytes_before``/``bytes_after``
+    are sampled from ``watch_paths`` when supplied, so a caller can measure the
+    on-disk growth caused by whatever ran inside the block. ``attributes`` may
+    be extended inside the block; everything there is written to the span and
+    returned by :meth:`as_record`.
     """
 
-    query: str
-    provider: str = ""
-    passages: list[str] = field(default_factory=list)
-    passage_count: int | None = None
-    latency_ms: float = 0.0
-
-    @property
-    def count(self) -> int:
-        if self.passage_count is not None:
-            return self.passage_count
-        return len(self.passages)
-
-    def as_record(self) -> dict[str, Any]:
-        return {
-            "query": self.query,
-            "provider": self.provider,
-            "passage_count": self.count,
-            "passages": list(self.passages),
-            "latency_ms": round(self.latency_ms, 3),
-        }
-
-
-@contextmanager
-def retrieval_span(
-    query: str,
-    provider: str = "",
-) -> Iterator[RetrievalMeasurement]:
-    """Wrap an explicit or prefetch retrieval call in a telemetry span.
-
-    Captures the query string, retrieved passage count, and millisecond
-    latency. Usage::
-
-        with retrieval_span("where does marc live", "cashew") as r:
-            r.passages = store.query(...)
-    """
-    measurement = RetrievalMeasurement(query=query, provider=provider)
-    tracer = get_tracer(MEMORY_TRACER_NAME)
-    start = time.perf_counter()
-    with tracer.start_as_current_span(MEMORY_RETRIEVAL_SPAN) as span:
-        span.set_attribute(MEMORY_PROVIDER_ATTR, provider)
-        span.set_attribute(MEM_QUERY_ATTR, query)
-        try:
-            yield measurement
-        finally:
-            measurement.latency_ms = (time.perf_counter() - start) * 1000.0
-            span.set_attribute(MEM_PASSAGES_ATTR, measurement.count)
-            span.set_attribute(MEM_LATENCY_ATTR, measurement.latency_ms)
-
-
-@dataclass
-class ConsolidationMeasurement:
-    """Handle yielded by :func:`consolidation_span`."""
-
-    provider: str = ""
+    name: str
+    attributes: dict[str, Any] = field(default_factory=dict)
     wall_seconds: float = 0.0
     cpu_seconds: float = 0.0
-    db_bytes_before: int = 0
-    db_bytes_after: int = 0
+    bytes_before: int = 0
+    bytes_after: int = 0
 
     @property
-    def db_growth_bytes(self) -> int:
-        return self.db_bytes_after - self.db_bytes_before
+    def bytes_growth(self) -> int:
+        return self.bytes_after - self.bytes_before
 
     def as_record(self) -> dict[str, Any]:
-        return {
-            "provider": self.provider,
+        record: dict[str, Any] = {
             "wall_seconds": round(self.wall_seconds, 4),
             "cpu_seconds": round(self.cpu_seconds, 4),
-            "db_bytes_before": self.db_bytes_before,
-            "db_bytes_after": self.db_bytes_after,
-            "db_growth_bytes": self.db_growth_bytes,
+            "bytes_before": self.bytes_before,
+            "bytes_after": self.bytes_after,
+            "bytes_growth": self.bytes_growth,
         }
+        record.update(self.attributes)
+        return record
 
 
 @contextmanager
-def consolidation_span(
-    provider: str = "",
-    store_paths: list[str | Path] | None = None,
-) -> Iterator[ConsolidationMeasurement]:
-    """Measure a background consolidation run: wall + CPU time and DB growth.
+def measured_span(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+    watch_paths: list[str | Path] | None = None,
+    tracer_name: str = MEASURE_TRACER_NAME,
+) -> Iterator[SpanMeasurement]:
+    """Time an operation, optionally sampling on-disk growth around it.
 
-    ``store_paths`` are the SQLite/vector-store files or directories whose
-    byte footprint is sampled before and after the run.
+    ``name`` is the OpenTelemetry span name; ``attributes`` are written onto
+    the span verbatim, so the caller controls the vocabulary::
+
+        with measured_span("memory.consolidation",
+                           {"memory.provider": "cashew"},
+                           watch_paths=store_paths) as m:
+            adapter.trigger_consolidation()
+        record = m.as_record()
     """
-    paths = store_paths or []
-    measurement = ConsolidationMeasurement(provider=provider)
-    measurement.db_bytes_before = directory_bytes(*paths)
-    tracer = get_tracer(MEMORY_TRACER_NAME)
+    paths = watch_paths or []
+    measurement = SpanMeasurement(name=name, attributes=dict(attributes or {}))
+    measurement.bytes_before = directory_bytes(*paths)
+    tracer = get_tracer(tracer_name)
     wall_start = time.perf_counter()
     cpu_start = time.process_time()
-    with tracer.start_as_current_span(MEMORY_CONSOLIDATION_SPAN) as span:
-        span.set_attribute(MEMORY_PROVIDER_ATTR, provider)
+    with tracer.start_as_current_span(name) as span:
         try:
             yield measurement
         finally:
             measurement.wall_seconds = time.perf_counter() - wall_start
             measurement.cpu_seconds = time.process_time() - cpu_start
-            measurement.db_bytes_after = directory_bytes(*paths)
-            span.set_attribute(MEM_WALL_ATTR, measurement.wall_seconds)
-            span.set_attribute(MEM_CPU_ATTR, measurement.cpu_seconds)
-            span.set_attribute(MEM_DB_BEFORE_ATTR, measurement.db_bytes_before)
-            span.set_attribute(MEM_DB_AFTER_ATTR, measurement.db_bytes_after)
-            span.set_attribute(MEM_DB_GROWTH_ATTR, measurement.db_growth_bytes)
+            measurement.bytes_after = directory_bytes(*paths)
+            span.set_attribute("measure.wall_seconds", measurement.wall_seconds)
+            span.set_attribute("measure.cpu_seconds", measurement.cpu_seconds)
+            span.set_attribute("measure.bytes_before", measurement.bytes_before)
+            span.set_attribute("measure.bytes_after", measurement.bytes_after)
+            span.set_attribute("measure.bytes_growth", measurement.bytes_growth)
+            for k, v in measurement.attributes.items():
+                span.set_attribute(k, v)
