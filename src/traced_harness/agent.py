@@ -16,11 +16,14 @@ from agno.tools.mcp import MCPTools
 from mcp.client import Client
 from opentelemetry import trace
 
+from traced_harness.plugins import MemoryPluginAdapter
 from traced_harness.skills import (
     Skill,
     activate_skill,
+    build_memory_instructions,
     build_skill_instructions,
     get_registered_skills,
+    register_memory_tools,
     register_skills,
 )
 from traced_harness.telemetry import get_tracer
@@ -60,8 +63,16 @@ async def create_agent(
     client: Client | None = None,
     model_name: str = DEFAULT_MODEL,
     skills: list[Skill] | None = None,
+    memory_adapter: MemoryPluginAdapter | None = None,
 ) -> Agent:
-    """Create an Agno agent wired to optional MCP client and discovered skills."""
+    """Create an Agno agent wired to optional MCP client and discovered skills.
+
+    When ``memory_adapter`` is supplied, its tool/context-hook contract is
+    registered into the dispatch registry and injected into the system prompt so
+    the agent knows which memory tools (``cashew_query``, ``recall``, ...) or
+    context-engine hooks (``nachos``, ``chronicle``) are active. The concrete
+    tool implementations themselves arrive over the MCP ``client``.
+    """
     tools: list[Any] = []
 
     if client is not None:
@@ -77,6 +88,18 @@ async def create_agent(
         skill_prompt = build_skill_instructions(skills)
         if skill_prompt:
             instructions_list.append(skill_prompt)
+
+    if memory_adapter is not None:
+        contract = memory_adapter.contract()
+        register_memory_tools(contract.tools, contract.provider)
+        memory_prompt = build_memory_instructions(
+            contract.provider,
+            contract.tools,
+            contract.context_hooks,
+            contract.system_prompt,
+        )
+        if memory_prompt:
+            instructions_list.append(memory_prompt)
 
     model = get_model(model_name)
     return Agent(

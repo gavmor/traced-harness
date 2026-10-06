@@ -321,3 +321,59 @@ def build_skill_instructions(skills: list[Skill]) -> str:
         sections.append("\n".join(avail_lines).strip())
 
     return "\n\n".join(sections).strip()
+
+
+# ---------------------------------------------------------------------------
+# Memory-provider registration.
+#
+# A memory provider (see ``plugins.MemoryPluginAdapter``) contributes recall
+# tools (``cashew_query``, ``recall``, ...) and/or implicit context-engine
+# hooks (``nachos`` manifest/prefetch, ``chronicle`` compression). These are
+# registered into (a) the agent's system prompt, via
+# ``build_memory_instructions``, and (b) a dispatch registry of active memory
+# tool names, via ``register_memory_tools`` — mirroring the skill registry.
+# ---------------------------------------------------------------------------
+
+_memory_tool_registry: dict[str, str] = {}
+
+
+def register_memory_tools(tools: list[str], provider: str = "") -> None:
+    """Register active memory tool names -> provider in the global registry."""
+    for tool in tools:
+        _memory_tool_registry[tool] = provider
+
+
+def get_registered_memory_tools() -> dict[str, str]:
+    """Return the active memory-tool -> provider dispatch registry."""
+    return dict(_memory_tool_registry)
+
+
+def clear_memory_tools() -> None:
+    """Clear the memory-tool registry (used between benchmark suites)."""
+    _memory_tool_registry.clear()
+
+
+def build_memory_instructions(
+    provider: str,
+    tools: list[str],
+    context_hooks: list[str] | None = None,
+    system_prompt: str = "",
+) -> str:
+    """Construct the system-prompt section describing the active memory
+    provider, its explicit recall tools, and any implicit context hooks.
+    """
+    hooks = context_hooks or []
+    if not tools and not hooks and not system_prompt:
+        return ""
+    lines = [f"# Memory Provider: {provider}"]
+    if system_prompt:
+        lines.append(system_prompt)
+    if tools:
+        tool_list = ", ".join(f"`{t}`" for t in tools)
+        lines.append(f"Available memory tools: {tool_list}.")
+    if hooks:
+        hook_list = ", ".join(hooks)
+        lines.append(
+            f"Context-engine hooks (implicit, no call required): {hook_list}."
+        )
+    return "\n".join(lines).strip()
