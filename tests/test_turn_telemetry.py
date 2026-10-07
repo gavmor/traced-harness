@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from openinference.instrumentation import Document
 
 from traced_harness.agent import (
     GENERATED_TOKENS_KEY,
@@ -37,7 +38,8 @@ from traced_harness.memory import (
     RETRIEVALS_KEY,
     MemoryProviderAdapter,
     MemoryToolContract,
-    _passages,
+    RetrievalMeasurement,
+    _documents,
     _retrieval_query,
     make_memory_tool_hook,
     make_memory_turn_executor,
@@ -248,10 +250,44 @@ def test_hook_records_a_measured_retrieval():
     assert len(records) == 1
     assert records[0]["query"] == "where"
     assert records[0]["provider"] == "fakemem"
-    assert records[0]["passage_count"] == 2
-    assert records[0]["passages"] == ["lives in Berlin", "moved in 2019"]
+    # A tool that declares no outputSchema returns opaque text. The harness
+    # reports ONE document rather than splitting the blob on a guess: what the
+    # tool actually declared is one result, and inferring two would be the
+    # instrument inventing structure the provider never claimed.
+    assert records[0]["passage_count"] == 1
+    assert records[0]["documents"] == [
+        {"content": '["lives in Berlin", "moved in 2019"]'}
+    ]
     # Latency is measured around the real call, not asserted as a constant.
     assert records[0]["latency_ms"] >= 0.0
+
+
+def test_hook_splits_documents_when_the_tool_declares_them():
+    """The same two memories, from a tool with an outputSchema."""
+    hook = _hook_for()
+
+    async def _call(**kwargs):
+        return _tool_result(
+            "lives in Berlin\nmoved in 2019",
+            [
+                {"id": "m1", "content": "lives in Berlin", "score": 0.9},
+                {"id": "m2", "content": "moved in 2019"},
+            ],
+        )
+
+    async def _run():
+        with turn_telemetry() as collected:
+            await hook("fakemem_recall", _call, {"query": "where"})
+        return collected
+
+    records = asyncio.run(_run())[RETRIEVALS_KEY]
+    assert records[0]["passage_count"] == 2
+    assert records[0]["passages"] == ["lives in Berlin", "moved in 2019"]
+    assert records[0]["documents"][0] == {
+        "content": "lives in Berlin",
+        "id": "m1",
+        "score": 0.9,
+    }
 
 
 def test_hook_ignores_tools_that_are_not_this_providers():
@@ -316,26 +352,92 @@ def test_hook_propagates_tool_failures():
     assert asyncio.run(_run()).get(RETRIEVALS_KEY) is None
 
 
+@dataclass
+class _ToolResult:
+    """The shape agno hands a tool hook: flattened text + MCP metadata."""
+
+    content: str
+    metadata: dict | None = None
+
+
+def _tool_result(content, structured=None):
+    meta = None if structured is None else {"structured_content": structured}
+    return _ToolResult(content=content, metadata=meta)
+
+
 @pytest.mark.parametrize(
     ("result", "expected"),
     [
         (None, []),
         ("", []),
         ("   ", []),
-        ('""', []),
         ("a single passage", ["a single passage"]),
-        ('["one", "two"]', ["one", "two"]),
-        ('{"results": ["one", "two"]}', ["one", "two"]),
-        (["one", "two"], ["one", "two"]),
+        # An agno ToolResult with no structured output: the flattened text.
+        (_tool_result("lives in Berlin"), ["lives in Berlin"]),
+        (_tool_result(""), []),
+        # MCP structured_content: a list is one document per element.
+        (_tool_result("ignored", ["one", "two"]), ["one", "two"]),
+        # ...and a non-list is a single document.
+        (_tool_result("ignored", {"content": "only one"}), ["only one"]),
     ],
 )
-def test_passage_normalization(result, expected):
-    assert _passages(result) == expected
+def test_documents_read_the_specified_boundary(result, expected):
+    assert [d["content"] for d in _documents(result)] == expected
+
+
+def test_structured_content_wins_over_flattened_text():
+    """The tool's declared output is higher fidelity than agno's join."""
+    docs = _documents(_tool_result("one\\ntwo", ["one", "two"]))
+    assert [d["content"] for d in docs] == ["one", "two"]
+
+
+def test_document_fields_are_carried_not_guessed():
+    docs = _documents(
+        _tool_result(
+            "x",
+            [{"id": "m1", "content": "lives in Berlin", "score": 0.91,
+              "metadata": {"session": "s2"}}],
+        )
+    )
+    assert len(docs) == 1
+    d = docs[0]
+    assert (d["id"], d["content"], d["score"]) == ("m1", "lives in Berlin", 0.91)
+    assert d["metadata"] == {"session": "s2"}
+    assert d["score"] == 0.91
+
+
+def test_a_mapping_without_content_is_serialized_whole():
+    docs = _documents(_tool_result("x", [{"fact": "drives a Tesla"}]))
+    assert docs[0]["content"] == '{"fact": "drives a Tesla"}'
+    assert "id" not in docs[0] and "score" not in docs[0]
+
+
+def test_empty_documents_are_dropped_not_counted():
+    docs = _documents(_tool_result("x", ["", "   ", "real"]))
+    assert [d["content"] for d in docs] == ["real"]
+
+
+def test_passages_alias_round_trips():
+    m = RetrievalMeasurement(query="q")
+    m.passages = ["a", "b", "  "]
+    assert [d["content"] for d in m.documents] == ["a", "b"]
+    assert m.passages == ["a", "b"]
+    assert m.count == 2
+
+
+def test_record_carries_documents_and_the_text_alias():
+    m = RetrievalMeasurement(query="q", provider="p")
+    m.documents = [Document(content="lives in Berlin", id="m1")]
+    rec = m.as_record()
+    assert rec["documents"] == [{"content": "lives in Berlin", "id": "m1"}]
+    assert rec["passages"] == ["lives in Berlin"]
+    assert rec["passage_count"] == 1
 
 
 def test_retrieval_query_falls_back_to_the_whole_argument_dict():
     assert _retrieval_query({"query": "where do I live"}) == "where do I live"
     assert _retrieval_query({"topic": "vehicles"}) == '{"topic": "vehicles"}'
+
 
 
 # ---------------------------------------------------------------------------
