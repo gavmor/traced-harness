@@ -1,0 +1,23 @@
+[
+  {
+    "name": "answered_the_question",
+    "instructions": "Did the assistant's output directly answer the user's input question?",
+    "type": "predicate"
+  },
+  {
+    "name": "tool_use",
+    "instructions": "Judge the tool calls this turn made: necessary, unnecessary, or missing (a tool was needed but not called).",
+    "type": "choice",
+    "choices": [
+      {"value": "necessary", "description": "Every call was needed to answer."},
+      {"value": "unnecessary", "description": "At least one call was not needed."},
+      {"value": "missing", "description": "A needed call was never made."}
+    ]
+  },
+  {
+    "name": "answer_quality",
+    "instructions": "Rate how well the output serves the user, from Poor to Excellent.",
+    "type": "score",
+    "levels": ["Poor", "Adequate", "Good", "Excellent"]
+  }
+]

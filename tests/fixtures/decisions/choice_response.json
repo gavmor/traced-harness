@@ -1,0 +1,18 @@
+{
+  "model": "gpt-6-luna-2026-01-30",
+  "answers": [
+    {
+      "name": "tool_use",
+      "type": "choice",
+      "choice": "necessary",
+      "confidence": 0.88,
+      "probabilities": [
+        {"value": "necessary", "probability": 0.88},
+        {"value": "unnecessary", "probability": 0.09},
+        {"value": "missing", "probability": 0.03}
+      ]
+    }
+  ],
+  "usage": {"input_tokens": 311, "output_tokens": 9, "input_tokens_details": {"cached_tokens": 128}},
+  "service_tier": "default"
+}
