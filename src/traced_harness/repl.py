@@ -1,11 +1,23 @@
-"""Interactive REPL for traced-agent powered by Agno."""
+"""Interactive REPL for traced-harness, built on cmd2.
+
+Command dispatch, history, tab completion, ``help``, and ``quit`` come from
+``cmd2``. What stays here is what is actually specific to this harness: the
+Rich rendering of sessions/tools/skills, and the bridge that lets a synchronous
+command loop drive the async agent.
+
+Slash-prefixed commands (``/status``) are accepted as an alias for the bare
+form (``status``) via a postparsing hook, so the REPL keeps the interface it
+had before cmd2 took over dispatch.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import uuid
 from pathlib import Path
+from typing import Any
 
+import cmd2
 from agno.agent import Agent
 from mcp.client import Client
 from rich.console import Console
@@ -36,7 +48,7 @@ def print_banner(
         f"[dim]Session ID : {session_id}[/dim]\n"
         f"[dim]Trace Log  : {session_file}[/dim]\n"
         f"[dim]Model      : {model_name}[/dim]\n"
-        f"[dim]Commands   : /new \\[name], /status, /tools, /skills, /skill <name>, /clear, or 'exit'/'quit'[/dim]"
+        f"[dim]Commands   : type 'help' (or '?'); 'quit' to exit[/dim]"
     )
     console.print(Panel(header, border_style="green"))
 
@@ -51,6 +63,234 @@ def display_turn(res: TurnResult) -> None:
     console.print(Panel(Markdown(res.output), title="Response", border_style="green"))
 
 
+class HarnessShell(cmd2.Cmd):
+    """The REPL. One ``do_*`` per command; ``default`` sends input to the agent."""
+
+    prompt = "agent> "
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        agent: Agent,
+        client: Client | None,
+        mcp_label: str,
+        session_id: str,
+        session_dir: Path,
+        model_name: str,
+        skills: list[Skill],
+        tools: list[Any],
+    ) -> None:
+        super().__init__(allow_cli_args=False, include_ipy=False)
+        self._loop = loop
+        self.agent = agent
+        self.client = client
+        self.mcp_label = mcp_label
+        self.session_id = session_id
+        self.session_dir = session_dir
+        self.model_name = model_name
+        self.skills = skills
+        self.tools = tools
+        self.register_postparsing_hook(self._allow_slash_prefix)
+
+    # -- plumbing ---------------------------------------------------------
+    def _allow_slash_prefix(
+        self, data: cmd2.plugin.PostparsingData
+    ) -> cmd2.plugin.PostparsingData:
+        """Treat ``/status`` as ``status``, preserving the original interface."""
+        raw = data.statement.raw
+        if raw.startswith("/"):
+            data.statement = self.statement_parser.parse(raw[1:])
+        return data
+
+    def _await(self, coro: Any) -> Any:
+        """Run a coroutine on the REPL's loop from cmd2's synchronous thread."""
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+
+    def _rebuild_agent(self) -> None:
+        """Recreate the agent, resetting in-context history and instructions."""
+        self.agent = self._await(
+            create_agent(self.client, model_name=self.model_name, skills=self.skills)
+        )
+
+    @property
+    def session_file(self) -> Path:
+        return self.session_dir / f"trace_{self.session_id}.jsonl"
+
+    @property
+    def _active_skills(self) -> int:
+        return sum(1 for s in self.skills if s.active)
+
+    def _banner(self) -> None:
+        print_banner(
+            self.session_id,
+            self.session_file,
+            self.mcp_label,
+            len(self.tools),
+            self.model_name,
+            len(self.skills),
+            self._active_skills,
+        )
+
+    # -- commands ---------------------------------------------------------
+    def do_new(self, args: cmd2.Statement) -> None:
+        """Reset context and rotate the session trace log.  Usage: new [id]"""
+        self.session_id = args.args.strip() or uuid.uuid4().hex[:12]
+        self._rebuild_agent()
+        console.print(
+            Panel(
+                f"[bold green]🔄 Started new session[/]\n"
+                f"[dim]Session ID : {self.session_id}[/dim]\n"
+                f"[dim]Trace Log  : {self.session_file}[/dim]",
+                border_style="green",
+            )
+        )
+
+    do_reset = do_new
+
+    def do_status(self, _args: cmd2.Statement) -> None:
+        """Show session configuration, MCP target, and skills."""
+        console.print(
+            Panel(
+                f"[bold]MCP Server[/] : {self.mcp_label}\n"
+                f"[bold]MCP Tools[/]  : {len(self.tools)} loaded\n"
+                f"[bold]Skills[/]     : {len(self.skills)} discovered "
+                f"({self._active_skills} active)\n"
+                f"[bold]Session ID[/] : {self.session_id}\n"
+                f"[bold]Trace Log[/]  : {self.session_file}\n"
+                f"[bold]Model[/]      : {self.model_name}\n"
+                f"[bold]Framework[/]  : Agno (async MCP + Skills)",
+                title="Session Status",
+                border_style="cyan",
+            )
+        )
+
+    def do_tools(self, _args: cmd2.Statement) -> None:
+        """List all tools discovered from the MCP server."""
+        body = (
+            "\n".join(
+                f"• [bold]{t.name}[/]: {(t.description or '').strip().splitlines()[0]}"
+                if (t.description or "").strip()
+                else f"• [bold]{t.name}[/]"
+                for t in self.tools
+            )
+            or "[dim]No MCP tools available.[/dim]"
+        )
+        console.print(
+            Panel(
+                body,
+                title=f"Available MCP Tools ({len(self.tools)})",
+                border_style="blue",
+            )
+        )
+
+    def do_skills(self, _args: cmd2.Statement) -> None:
+        """List discovered skills and their activation status."""
+        if not self.skills:
+            console.print(
+                Panel(
+                    "[dim]No skills discovered.[/dim]",
+                    title="Skills (0)",
+                    border_style="cyan",
+                )
+            )
+            return
+        table = Table(
+            title=f"Discovered Skills ({len(self.skills)})", border_style="cyan"
+        )
+        table.add_column("Name", style="bold cyan")
+        table.add_column("Status", style="bold")
+        table.add_column("Description")
+        for s in self.skills:
+            table.add_row(
+                s.name,
+                "[bold green]Active[/]" if s.active else "[dim]Available[/]",
+                s.description,
+            )
+        console.print(table)
+
+    def do_skill(self, args: cmd2.Statement) -> None:
+        """Inspect a skill's markdown and toggle activation.
+
+        Usage: skill <name> [toggle|view]
+        """
+        parts = args.args.split(maxsplit=1)
+        if not parts:
+            console.print("[bold red]Usage:[/] skill <name> [toggle|view]")
+            return
+        name = parts[0]
+        view_only = len(parts) > 1 and parts[1].strip().lower() == "view"
+
+        skill = next((s for s in self.skills if s.name.lower() == name.lower()), None)
+        if skill is None:
+            available = ", ".join(s.name for s in self.skills) or "None"
+            console.print(
+                f"[bold red]Skill '{name}' not found.[/] Discovered skills: {available}"
+            )
+            return
+
+        if view_only:
+            status = "[bold green]Active[/]" if skill.active else "[dim]Available[/]"
+        else:
+            skill.active = not skill.active
+            if skill.active:
+                record_skill_activation_span(
+                    name=skill.name,
+                    path=skill.path,
+                    chars_loaded=len(skill.content),
+                    mode="preload",
+                )
+                status = "[bold green]Active (Preloaded)[/]"
+            else:
+                status = "[dim]Available (Deactivated)[/]"
+            self._rebuild_agent()
+
+        console.print(
+            Panel(
+                Markdown(
+                    f"**Status:** {status}\n\n"
+                    f"**Path:** `{skill.path}`\n\n"
+                    f"**Description:** {skill.description}\n\n"
+                    f"---\n\n### Content\n\n{skill.content}"
+                ),
+                title=f"Skill: {skill.name}",
+                border_style="cyan",
+            )
+        )
+
+    def do_clear(self, _args: cmd2.Statement) -> None:
+        """Clear the terminal screen."""
+        console.clear()
+        self._banner()
+
+    def do_exit(self, _args: cmd2.Statement) -> bool:
+        """Exit the REPL."""
+        return True
+
+    do_q = do_exit
+
+    def default(self, statement: cmd2.Statement) -> None:
+        """Anything that is not a command is a prompt for the agent."""
+        self.run_turn(statement.raw.strip())
+
+    def run_turn(self, prompt: str) -> None:
+        """Execute one agent turn and render it."""
+        try:
+            display_turn(
+                self._await(
+                    execute_turn(
+                        prompt,
+                        agent=self.agent,
+                        session_id=self.session_id,
+                        session_file=self.session_file,
+                        mcp_label=self.mcp_label,
+                        skills=self.skills,
+                    )
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[bold red]Error during execution: {exc}[/]\n")
+
+
 async def run_repl(
     client: Client | None = None,
     mcp_label: str = "none",
@@ -60,240 +300,46 @@ async def run_repl(
     initial_prompt: str | None = None,
     skills: list[Skill] | None = None,
 ) -> None:
-    """Run interactive REPL connected to an MCP server and/or skills."""
+    """Run the interactive REPL against an MCP server and/or skills."""
     skills = skills or []
-    session_id = session_id or uuid.uuid4().hex[:12]
     session_dir = session_dir or (Path.cwd() / "sessions")
     session_dir.mkdir(parents=True, exist_ok=True)
-    session_file = session_dir / f"trace_{session_id}.jsonl"
 
-    agent: Agent = await create_agent(client, model_name=model_name, skills=skills)
-    tool_count = 0
-    tools_list_cache = []
-    if client is not None:
-        tools_resp = await client.list_tools()
-        tools_list_cache = tools_resp.tools
-        tool_count = len(tools_list_cache)
+    agent = await create_agent(client, model_name=model_name, skills=skills)
+    tools = list((await client.list_tools()).tools) if client is not None else []
 
-    active_count = sum(1 for s in skills if s.active)
-    print_banner(
-        session_id,
-        session_file,
-        mcp_label,
-        tool_count,
-        model_name,
-        len(skills),
-        active_count,
+    shell = HarnessShell(
+        loop=asyncio.get_running_loop(),
+        agent=agent,
+        client=client,
+        mcp_label=mcp_label,
+        session_id=session_id or uuid.uuid4().hex[:12],
+        session_dir=session_dir,
+        model_name=model_name,
+        skills=skills,
+        tools=tools,
     )
+    shell._banner()
 
     if initial_prompt:
         console.print(f"[bold blue]>>> {initial_prompt}[/]")
-        try:
-            res = await execute_turn(
-                initial_prompt,
-                agent=agent,
-                session_id=session_id,
-                session_file=session_file,
-                mcp_label=mcp_label,
-                skills=skills,
-            )
-            display_turn(res)
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[bold red]Error: {exc}[/]\n")
+        shell.run_turn(initial_prompt)
 
+    # cmd2's own cmdloop insists on the main thread (it installs SIGINT/SIGHUP
+    # handlers) and reads via prompt_toolkit, so it cannot host an async agent.
+    # It documents overriding it, and `onecmd_plus_hooks` is the entry point
+    # cmdloop itself calls — so parsing, dispatch, hooks, history and `help`
+    # still come from cmd2; only the read loop is ours. Dispatch runs off-loop
+    # so commands can submit coroutines back to it.
     loop = asyncio.get_running_loop()
     while True:
         try:
-            raw_input = await loop.run_in_executor(None, input, "agent> ")
+            line = await loop.run_in_executor(None, input, shell.prompt)
         except (EOFError, KeyboardInterrupt):
-            console.print(
-                "\n[dim]Ending session. OpenTelemetry traces preserved.[/dim]"
-            )
+            break
+        if not line.strip():
+            continue
+        if await asyncio.to_thread(shell.onecmd_plus_hooks, line):
             break
 
-        query = raw_input.strip()
-        if not query:
-            continue
-        if query.lower() in ("exit", "quit", ":q", "q"):
-            console.print("[dim]Ending session. OpenTelemetry traces preserved.[/dim]")
-            break
-
-        if query.startswith(("/new", "/reset")):
-            parts = query.split(maxsplit=1)
-            new_id = (
-                parts[1].strip()
-                if len(parts) > 1 and parts[1].strip()
-                else uuid.uuid4().hex[:12]
-            )
-            session_id = new_id
-            session_file = session_dir / f"trace_{session_id}.jsonl"
-            # Recreate agent to reset in-memory conversation history
-            agent = await create_agent(client, model_name=model_name, skills=skills)
-            msg = (
-                f"[bold green]🔄 Started new session[/]\n"
-                f"[dim]Session ID : {session_id}[/dim]\n"
-                f"[dim]Trace Log  : {session_file}[/dim]"
-            )
-            console.print(Panel(msg, border_style="green"))
-            continue
-
-        if query == "/status":
-            active_skills_count = sum(1 for s in skills if s.active)
-            info = (
-                f"[bold]MCP Server[/] : {mcp_label}\n"
-                f"[bold]MCP Tools[/]  : {tool_count} loaded\n"
-                f"[bold]Skills[/]     : {len(skills)} discovered ({active_skills_count} active)\n"
-                f"[bold]Session ID[/] : {session_id}\n"
-                f"[bold]Trace Log[/]  : {session_file}\n"
-                f"[bold]Model[/]      : {model_name}\n"
-                f"[bold]Framework[/]  : Agno (async MCP + Skills)"
-            )
-            console.print(Panel(info, title="Session Status", border_style="cyan"))
-            continue
-
-        if query == "/tools":
-            if not tools_list_cache:
-                console.print(
-                    Panel(
-                        "[dim]No MCP tools available.[/dim]",
-                        title="Available MCP Tools (0)",
-                        border_style="blue",
-                    )
-                )
-            else:
-                formatted_tools = []
-                for t in tools_list_cache:
-                    desc = (t.description or "").strip().split("\n")[0]
-                    formatted_tools.append(f"• [bold]{t.name}[/]: {desc}")
-                console.print(
-                    Panel(
-                        "\n".join(formatted_tools),
-                        title=f"Available MCP Tools ({tool_count})",
-                        border_style="blue",
-                    )
-                )
-            continue
-
-        if query == "/skills":
-            if not skills:
-                console.print(
-                    Panel(
-                        "[dim]No skills discovered.[/dim]",
-                        title="Skills (0)",
-                        border_style="cyan",
-                    )
-                )
-            else:
-                table = Table(
-                    title=f"Discovered Skills ({len(skills)})", border_style="cyan"
-                )
-                table.add_column("Name", style="bold cyan")
-                table.add_column("Status", style="bold")
-                table.add_column("Description")
-                for s in skills:
-                    status = (
-                        "[bold green]Active[/]" if s.active else "[dim]Available[/]"
-                    )
-                    table.add_row(s.name, status, s.description)
-                console.print(table)
-            continue
-
-        if query.startswith("/skill"):
-            parts = query.split(maxsplit=2)
-            if len(parts) < 2:
-                console.print("[bold red]Usage:[/] /skill <name> [toggle|view]")
-                continue
-
-            target_name = parts[1].strip()
-            subaction = parts[2].strip().lower() if len(parts) > 2 else None
-
-            matched_skill = next(
-                (s for s in skills if s.name.lower() == target_name.lower()), None
-            )
-            if not matched_skill:
-                avail_names = ", ".join(s.name for s in skills) or "None"
-                console.print(
-                    f"[bold red]Skill '{target_name}' not found.[/] Discovered skills: {avail_names}"
-                )
-                continue
-
-            if subaction == "view":
-                status_label = (
-                    "[bold green]Active[/]"
-                    if matched_skill.active
-                    else "[dim]Available[/]"
-                )
-            else:
-                # Default behavior or 'toggle': toggle active state
-                matched_skill.active = not matched_skill.active
-                if matched_skill.active:
-                    record_skill_activation_span(
-                        name=matched_skill.name,
-                        path=matched_skill.path,
-                        chars_loaded=len(matched_skill.content),
-                        mode="preload",
-                    )
-                    status_label = "[bold green]Active (Preloaded)[/]"
-                else:
-                    status_label = "[dim]Available (Deactivated)[/]"
-
-                # Recreate agent to update system prompt instructions
-                agent = await create_agent(client, model_name=model_name, skills=skills)
-
-            skill_display = (
-                f"**Status:** {status_label}\n\n"
-                f"**Path:** `{matched_skill.path}`\n\n"
-                f"**Description:** {matched_skill.description}\n\n"
-                f"---\n\n"
-                f"### Content\n\n{matched_skill.content}"
-            )
-            console.print(
-                Panel(
-                    Markdown(skill_display),
-                    title=f"Skill: {matched_skill.name}",
-                    border_style="cyan",
-                )
-            )
-            continue
-
-        if query == "/clear":
-            console.clear()
-            active_count = sum(1 for s in skills if s.active)
-            print_banner(
-                session_id,
-                session_file,
-                mcp_label,
-                tool_count,
-                model_name,
-                len(skills),
-                active_count,
-            )
-            continue
-
-        if query in ("/help", "/?"):
-            help_text = (
-                "• [bold]/new [id][/]        - Reset context and rotate session trace log\n"
-                "• [bold]/status[/]          - Show current session configuration, MCP target, and skills\n"
-                "• [bold]/tools[/]           - List all discovered tools from the MCP server\n"
-                "• [bold]/skills[/]          - List all discovered skills and their activation status\n"
-                "• [bold]/skill <name>[/]    - Inspect skill markdown and toggle activation\n"
-                "• [bold]/clear[/]           - Clear terminal screen\n"
-                "• [bold]exit / quit[/]      - Exit REPL"
-            )
-            console.print(
-                Panel(help_text, title="Available Commands", border_style="cyan")
-            )
-            continue
-
-        try:
-            res = await execute_turn(
-                query,
-                agent=agent,
-                session_id=session_id,
-                session_file=session_file,
-                mcp_label=mcp_label,
-                skills=skills,
-            )
-            display_turn(res)
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[bold red]Error during execution: {exc}[/]\n")
+    console.print("\n[dim]Ending session. OpenTelemetry traces preserved.[/dim]")
