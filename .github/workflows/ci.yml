@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync (locked)
+        run: uv sync --locked
+
+      # Includes C901: the cyclomatic-complexity cap. The bar and its
+      # grandfathered exceptions live in pyproject.toml, so this runs the same
+      # check a developer gets locally from `uv run ruff check src tests`.
+      - name: Lint and complexity cap
+        run: uv run ruff check src tests
+
+      - name: Tests
+        run: uv run pytest -q
+
+      # The cap only holds if the grandfather list shrinks. Fail when an entry
+      # is no longer needed, so a fixed file cannot silently keep its waiver.
+      - name: Grandfather list is still earning its keep
+        run: |
+          set -euo pipefail
+          status=0
+          for f in $(uv run python - <<'PY'
+          import tomllib, pathlib
+          cfg = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          ign = cfg["tool"]["ruff"]["lint"]["per-file-ignores"]
+          print("\n".join(p for p, rules in ign.items() if "C901" in rules))
+          PY
+          ); do
+            if uv run ruff check --select C901 --no-cache --isolated \
+                 --config "lint.mccabe.max-complexity = 10" "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::$f is now under the complexity cap — remove its C901 waiver from pyproject.toml"
+              status=1
+            else
+              echo "still needed: $f"
+            fi
+          done
+          exit $status

@@ -38,9 +38,32 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
-# Collect only the project's own tests. Without this, bare `pytest` descends
-# into the vendored skill directories (.agents/, skills/, .claude/, .crush/)
-# and tries to collect their placeholder eval templates, which import
-# deliberately-nonexistent modules (`ai_app`, `metrics`) and error on import.
+# Collect only this project's tests. Without it, a checkout that has skills
+# vendored locally (.agents/, skills/, .claude/, .crush/) makes bare `pytest`
+# descend into their placeholder eval templates, which import deliberately
+# nonexistent modules. CI and local then disagree.
 testpaths = ["tests"]
+
+[tool.ruff.lint]
+# C901 is the complexity cap; the rest is ruff's default rule set.
+extend-select = ["C901"]
+
+[tool.ruff.lint.mccabe]
+# The bar for new code. Every function in the repo is under this except the
+# grandfathered list below.
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+# Pre-existing violations, grandfathered so the cap can be enforced now rather
+# than after they are all fixed. This list is a burn-down — delete an entry
+# when its file is clean, do not add to it.
+#
+#   client.py  parse_mcp_target  (16)  — no open PR addresses this
+#   repl.py    run_repl          (24)  — fixed by #7 (-> 10)
+#   skills.py  scan_skills_dirs  (13)  — fixed by #6 (-> 5)
+#              load_skill_file   (13)  — fixed by #6 (-> 7)
+#              discover_skills   (12)  — fixed by #6 (-> 4)
+"src/traced_harness/client.py" = ["C901"]
+"src/traced_harness/repl.py" = ["C901"]
+"src/traced_harness/skills.py" = ["C901"]
 
