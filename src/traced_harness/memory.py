@@ -37,11 +37,17 @@ import subprocess
 import time
 import urllib.request
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from openinference.semconv.trace import (
+    DocumentAttributes,
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
 
 from traced_harness.session_runner import SessionRunner, TurnExecutor
 from traced_harness.skills import (
@@ -62,6 +68,7 @@ __all__ = [
     "MemoryProviderAdapter",
     "MemoryToolContract",
     "RetrievalMeasurement",
+    "RetrievedDocument",
     "build_memory_instructions",
     "clear_memory_tools",
     "consolidation_span",
@@ -214,6 +221,9 @@ MEM_QUERY_ATTR = "memory.retrieval.query"
 MEM_PASSAGES_ATTR = "memory.retrieval.passage_count"
 MEM_LATENCY_ATTR = "memory.retrieval.latency_ms"
 
+#: Where agno stows MCP's structured tool output on a ``ToolResult``.
+MCP_STRUCTURED_CONTENT_KEY = "structured_content"
+
 
 def record_memory_injection(
     base_prompt_tokens: int,
@@ -240,32 +250,72 @@ def record_memory_injection(
     }
 
 
+@dataclass(frozen=True)
+class RetrievedDocument:
+    """One document a memory provider returned for a query.
+
+    Mirrors OpenInference's document attributes
+    (``document.id`` / ``.content`` / ``.score`` / ``.metadata``) so a
+    retrieval span carries the same shape Phoenix, Arize AX and Langfuse
+    already read, instead of a bespoke passage list.
+    """
+
+    content: str
+    id: str | None = None
+    score: float | None = None
+    metadata: Mapping[str, Any] | None = None
+
+    def as_record(self) -> dict[str, Any]:
+        record: dict[str, Any] = {"content": self.content}
+        if self.id is not None:
+            record["id"] = self.id
+        if self.score is not None:
+            record["score"] = self.score
+        if self.metadata:
+            record["metadata"] = dict(self.metadata)
+        return record
+
+
 @dataclass
 class RetrievalMeasurement:
     """Mutable handle yielded by :func:`retrieval_span`.
 
-    The caller sets ``passages`` (or ``passage_count``) inside the ``with``
-    block; latency is measured automatically on exit.
+    The caller sets ``documents`` (or the ``passages`` convenience alias, or
+    ``passage_count``) inside the ``with`` block; latency is measured
+    automatically on exit.
     """
 
     query: str
     provider: str = ""
-    passages: list[str] = field(default_factory=list)
+    documents: list[RetrievedDocument] = field(default_factory=list)
     passage_count: int | None = None
     latency_ms: float = 0.0
+
+    @property
+    def passages(self) -> list[str]:
+        """Document contents, for callers that only want the text."""
+        return [d.content for d in self.documents]
+
+    @passages.setter
+    def passages(self, values: list[str]) -> None:
+        self.documents = [
+            RetrievedDocument(content=str(v)) for v in values if str(v).strip()
+        ]
 
     @property
     def count(self) -> int:
         if self.passage_count is not None:
             return self.passage_count
-        return len(self.passages)
+        return len(self.documents)
 
     def as_record(self) -> dict[str, Any]:
         return {
             "query": self.query,
             "provider": self.provider,
             "passage_count": self.count,
-            "passages": list(self.passages),
+            "documents": [d.as_record() for d in self.documents],
+            # Retained so trace consumers that only read text keep working.
+            "passages": self.passages,
             "latency_ms": round(self.latency_ms, 3),
         }
 
@@ -287,14 +337,44 @@ def retrieval_span(
     tracer = get_tracer(MEMORY_TRACER_NAME)
     start = time.perf_counter()
     with tracer.start_as_current_span(MEMORY_RETRIEVAL_SPAN) as span:
+        span.set_attribute(
+            SpanAttributes.OPENINFERENCE_SPAN_KIND,
+            OpenInferenceSpanKindValues.RETRIEVER.value,
+        )
+        span.set_attribute(SpanAttributes.INPUT_VALUE, query)
         span.set_attribute(MEMORY_PROVIDER_ATTR, provider)
         span.set_attribute(MEM_QUERY_ATTR, query)
         try:
             yield measurement
         finally:
             measurement.latency_ms = (time.perf_counter() - start) * 1000.0
+            _set_document_attributes(span, measurement.documents)
             span.set_attribute(MEM_PASSAGES_ATTR, measurement.count)
             span.set_attribute(MEM_LATENCY_ATTR, measurement.latency_ms)
+
+
+def _set_document_attributes(span: Any, documents: list[RetrievedDocument]) -> None:
+    """Write documents under OpenInference's ``retrieval.documents.*`` keys.
+
+    Phoenix, Arize AX and Langfuse already render this shape; emitting it means
+    a memory retrieval is legible to those tools without a bespoke decoder.
+    """
+    base = SpanAttributes.RETRIEVAL_DOCUMENTS
+    for i, doc in enumerate(documents):
+        span.set_attribute(
+            f"{base}.{i}.{DocumentAttributes.DOCUMENT_CONTENT}", doc.content
+        )
+        if doc.id is not None:
+            span.set_attribute(f"{base}.{i}.{DocumentAttributes.DOCUMENT_ID}", doc.id)
+        if doc.score is not None:
+            span.set_attribute(
+                f"{base}.{i}.{DocumentAttributes.DOCUMENT_SCORE}", doc.score
+            )
+        if doc.metadata:
+            span.set_attribute(
+                f"{base}.{i}.{DocumentAttributes.DOCUMENT_METADATA}",
+                json.dumps(dict(doc.metadata), default=str, sort_keys=True),
+            )
 
 
 @contextmanager
@@ -401,40 +481,71 @@ def _retrieval_query(arguments: dict[str, Any]) -> str:
     return json.dumps(arguments, default=str, sort_keys=True)
 
 
-def _passages(result: Any) -> list[str]:
-    """Normalize a memory tool's return value into retrieved passages.
+def _as_document(item: Any) -> RetrievedDocument | None:
+    """One structured-output element -> one retrieved document.
 
-    MCP tools answer with text, so a JSON payload arrives as a string: parse
-    it before deciding, otherwise a list of five memories is miscounted as one
-    passage. Anything genuinely opaque counts as a single passage, and an
-    empty result as none — a provider that found nothing must not be recorded
-    as having retrieved something.
+    A mapping is read for the OpenInference document fields it declares;
+    anything else is content with no id or score. Empty content yields no
+    document at all — a provider that found nothing must not be recorded as
+    having retrieved something.
     """
-    if result is None:
-        return []
-    if isinstance(result, str):
-        text = result.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-        except (ValueError, TypeError):
-            return [text]
-        if isinstance(parsed, str):
-            return [parsed] if parsed.strip() else []
-        return _passages(parsed)
-    if isinstance(result, dict):
-        for key in ("passages", "results", "memories", "matches", "items"):
-            inner = result.get(key)
-            if isinstance(inner, list):
-                return _passages(inner)
-        return [json.dumps(result, default=str)]
-    if isinstance(result, (list, tuple)):
-        out: list[str] = []
-        for item in result:
-            out.extend(_passages(item))
-        return out
-    return [str(result)]
+    if item is None:
+        return None
+    if isinstance(item, Mapping):
+        raw = item.get("content", item.get("text"))
+        content = (
+            str(raw)
+            if raw is not None
+            else json.dumps(dict(item), default=str, sort_keys=True)
+        )
+        if not content.strip():
+            return None
+        score = item.get("score")
+        return RetrievedDocument(
+            content=content,
+            id=None if item.get("id") is None else str(item["id"]),
+            score=None if score is None else float(score),
+            metadata=item.get("metadata")
+            if isinstance(item.get("metadata"), Mapping)
+            else None,
+        )
+    content = str(item)
+    return RetrievedDocument(content=content) if content.strip() else None
+
+
+def _documents(result: Any) -> list[RetrievedDocument]:
+    """Read a memory tool's return value as structured retrieval documents.
+
+    This reads the *specified* boundary rather than guessing at shapes. Agno
+    hands a tool hook a ``ToolResult`` whose ``metadata`` carries MCP's
+    ``structured_content`` — the tool's own declared output, validated against
+    its ``outputSchema`` — alongside ``content``, the text blocks flattened to
+    a string. So there are only two sources, in order of fidelity:
+
+    1. ``structured_content``: a list is N documents, one per element;
+       anything else is a single document.
+    2. ``content``: the flattened text, as one document.
+
+    A bare string (a non-MCP tool, or a test double) is one document. Nothing
+    here inspects dictionary keys hoping to find the passage list, because the
+    MCP result already says where it is.
+    """
+    structured = _structured_content(result)
+    if structured is not None:
+        items = structured if isinstance(structured, (list, tuple)) else [structured]
+        return [d for d in (_as_document(i) for i in items) if d is not None]
+
+    content = getattr(result, "content", result)
+    doc = _as_document(content)
+    return [doc] if doc is not None else []
+
+
+def _structured_content(result: Any) -> Any | None:
+    """MCP ``structured_content``, as agno stores it on a ``ToolResult``."""
+    metadata = getattr(result, "metadata", None)
+    if isinstance(metadata, Mapping):
+        return metadata.get(MCP_STRUCTURED_CONTENT_KEY)
+    return None
 
 
 def make_memory_tool_hook(contract: MemoryToolContract) -> Any:
@@ -465,7 +576,7 @@ def make_memory_tool_hook(contract: MemoryToolContract) -> Any:
             return await function_call(**arguments)
         with retrieval_span(_retrieval_query(arguments), provider) as measurement:
             result = await function_call(**arguments)
-            measurement.passages = _passages(result)
+            measurement.documents = _documents(result)
         append_turn_record(RETRIEVALS_KEY, measurement.as_record())
         return result
 
