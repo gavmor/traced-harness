@@ -43,10 +43,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openinference.semconv.trace import (
-    DocumentAttributes,
-    OpenInferenceSpanKindValues,
-    SpanAttributes,
+from openinference.instrumentation import (
+    Document,
+    get_input_attributes,
+    get_retriever_attributes,
+    get_span_kind_attributes,
 )
 
 from traced_harness.session_runner import SessionRunner, TurnExecutor
@@ -68,7 +69,6 @@ __all__ = [
     "MemoryProviderAdapter",
     "MemoryToolContract",
     "RetrievalMeasurement",
-    "RetrievedDocument",
     "build_memory_instructions",
     "clear_memory_tools",
     "consolidation_span",
@@ -250,32 +250,6 @@ def record_memory_injection(
     }
 
 
-@dataclass(frozen=True)
-class RetrievedDocument:
-    """One document a memory provider returned for a query.
-
-    Mirrors OpenInference's document attributes
-    (``document.id`` / ``.content`` / ``.score`` / ``.metadata``) so a
-    retrieval span carries the same shape Phoenix, Arize AX and Langfuse
-    already read, instead of a bespoke passage list.
-    """
-
-    content: str
-    id: str | None = None
-    score: float | None = None
-    metadata: Mapping[str, Any] | None = None
-
-    def as_record(self) -> dict[str, Any]:
-        record: dict[str, Any] = {"content": self.content}
-        if self.id is not None:
-            record["id"] = self.id
-        if self.score is not None:
-            record["score"] = self.score
-        if self.metadata:
-            record["metadata"] = dict(self.metadata)
-        return record
-
-
 @dataclass
 class RetrievalMeasurement:
     """Mutable handle yielded by :func:`retrieval_span`.
@@ -283,23 +257,28 @@ class RetrievalMeasurement:
     The caller sets ``documents`` (or the ``passages`` convenience alias, or
     ``passage_count``) inside the ``with`` block; latency is measured
     automatically on exit.
+
+    ``documents`` are OpenInference :class:`~openinference.instrumentation.Document`
+    mappings — ``content`` / ``id`` / ``score`` / ``metadata``. That is the
+    upstream type, not a local mirror of it, so the span attributes come from
+    ``get_retriever_attributes`` rather than a parallel encoder here.
     """
 
     query: str
     provider: str = ""
-    documents: list[RetrievedDocument] = field(default_factory=list)
+    documents: list[Document] = field(default_factory=list)
     passage_count: int | None = None
     latency_ms: float = 0.0
 
     @property
     def passages(self) -> list[str]:
         """Document contents, for callers that only want the text."""
-        return [d.content for d in self.documents]
+        return [str(d.get("content", "")) for d in self.documents]
 
     @passages.setter
     def passages(self, values: list[str]) -> None:
         self.documents = [
-            RetrievedDocument(content=str(v)) for v in values if str(v).strip()
+            Document(content=str(v)) for v in values if str(v).strip()
         ]
 
     @property
@@ -313,7 +292,7 @@ class RetrievalMeasurement:
             "query": self.query,
             "provider": self.provider,
             "passage_count": self.count,
-            "documents": [d.as_record() for d in self.documents],
+            "documents": [dict(d) for d in self.documents],
             # Retained so trace consumers that only read text keep working.
             "passages": self.passages,
             "latency_ms": round(self.latency_ms, 3),
@@ -337,44 +316,19 @@ def retrieval_span(
     tracer = get_tracer(MEMORY_TRACER_NAME)
     start = time.perf_counter()
     with tracer.start_as_current_span(MEMORY_RETRIEVAL_SPAN) as span:
-        span.set_attribute(
-            SpanAttributes.OPENINFERENCE_SPAN_KIND,
-            OpenInferenceSpanKindValues.RETRIEVER.value,
-        )
-        span.set_attribute(SpanAttributes.INPUT_VALUE, query)
+        span.set_attributes(get_span_kind_attributes("retriever"))
+        span.set_attributes(get_input_attributes(query))
         span.set_attribute(MEMORY_PROVIDER_ATTR, provider)
         span.set_attribute(MEM_QUERY_ATTR, query)
         try:
             yield measurement
         finally:
             measurement.latency_ms = (time.perf_counter() - start) * 1000.0
-            _set_document_attributes(span, measurement.documents)
+            span.set_attributes(
+                get_retriever_attributes(documents=measurement.documents)
+            )
             span.set_attribute(MEM_PASSAGES_ATTR, measurement.count)
             span.set_attribute(MEM_LATENCY_ATTR, measurement.latency_ms)
-
-
-def _set_document_attributes(span: Any, documents: list[RetrievedDocument]) -> None:
-    """Write documents under OpenInference's ``retrieval.documents.*`` keys.
-
-    Phoenix, Arize AX and Langfuse already render this shape; emitting it means
-    a memory retrieval is legible to those tools without a bespoke decoder.
-    """
-    base = SpanAttributes.RETRIEVAL_DOCUMENTS
-    for i, doc in enumerate(documents):
-        span.set_attribute(
-            f"{base}.{i}.{DocumentAttributes.DOCUMENT_CONTENT}", doc.content
-        )
-        if doc.id is not None:
-            span.set_attribute(f"{base}.{i}.{DocumentAttributes.DOCUMENT_ID}", doc.id)
-        if doc.score is not None:
-            span.set_attribute(
-                f"{base}.{i}.{DocumentAttributes.DOCUMENT_SCORE}", doc.score
-            )
-        if doc.metadata:
-            span.set_attribute(
-                f"{base}.{i}.{DocumentAttributes.DOCUMENT_METADATA}",
-                json.dumps(dict(doc.metadata), default=str, sort_keys=True),
-            )
 
 
 @contextmanager
@@ -481,39 +435,50 @@ def _retrieval_query(arguments: dict[str, Any]) -> str:
     return json.dumps(arguments, default=str, sort_keys=True)
 
 
-def _as_document(item: Any) -> RetrievedDocument | None:
-    """One structured-output element -> one retrieved document.
+def _as_document(item: Any) -> Document | None:
+    """One structured-output element -> one OpenInference document.
 
-    A mapping is read for the OpenInference document fields it declares;
-    anything else is content with no id or score. Empty content yields no
-    document at all — a provider that found nothing must not be recorded as
-    having retrieved something.
+    Empty content yields no document at all — a provider that found nothing
+    must not be recorded as having retrieved something.
     """
     if item is None:
         return None
     if isinstance(item, Mapping):
-        raw = item.get("content", item.get("text"))
-        content = (
-            str(raw)
-            if raw is not None
-            else json.dumps(dict(item), default=str, sort_keys=True)
-        )
-        if not content.strip():
-            return None
-        score = item.get("score")
-        return RetrievedDocument(
-            content=content,
-            id=None if item.get("id") is None else str(item["id"]),
-            score=None if score is None else float(score),
-            metadata=item.get("metadata")
-            if isinstance(item.get("metadata"), Mapping)
-            else None,
-        )
+        return _mapping_document(item)
     content = str(item)
-    return RetrievedDocument(content=content) if content.strip() else None
+    return Document(content=content) if content.strip() else None
 
 
-def _documents(result: Any) -> list[RetrievedDocument]:
+#: Optional document fields, with the cast each needs. ``content`` is required
+#: and handled separately; ``metadata`` is a mapping, not a scalar.
+_OPTIONAL_DOCUMENT_FIELDS: tuple[tuple[str, Any], ...] = (
+    ("id", str),
+    ("score", float),
+)
+
+
+def _mapping_document(item: Mapping[str, Any]) -> Document | None:
+    """Read the document fields a mapping declares, casting as OpenInference wants."""
+    raw = item.get("content", item.get("text"))
+    content = (
+        str(raw)
+        if raw is not None
+        else json.dumps(dict(item), default=str, sort_keys=True)
+    )
+    if not content.strip():
+        return None
+    doc = Document(content=content)
+    for key, cast in _OPTIONAL_DOCUMENT_FIELDS:
+        value = item.get(key)
+        if value is not None:
+            doc[key] = cast(value)  # type: ignore[literal-required]
+    metadata = item.get("metadata")
+    if isinstance(metadata, Mapping):
+        doc["metadata"] = dict(metadata)
+    return doc
+
+
+def _documents(result: Any) -> list[Document]:
     """Read a memory tool's return value as structured retrieval documents.
 
     This reads the *specified* boundary rather than guessing at shapes. Agno

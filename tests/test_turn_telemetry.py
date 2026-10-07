@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from openinference.instrumentation import Document
 
 from traced_harness.agent import (
     GENERATED_TOKENS_KEY,
@@ -38,7 +39,6 @@ from traced_harness.memory import (
     MemoryProviderAdapter,
     MemoryToolContract,
     RetrievalMeasurement,
-    RetrievedDocument,
     _documents,
     _retrieval_query,
     make_memory_tool_hook,
@@ -382,13 +382,13 @@ def _tool_result(content, structured=None):
     ],
 )
 def test_documents_read_the_specified_boundary(result, expected):
-    assert [d.content for d in _documents(result)] == expected
+    assert [d["content"] for d in _documents(result)] == expected
 
 
 def test_structured_content_wins_over_flattened_text():
     """The tool's declared output is higher fidelity than agno's join."""
     docs = _documents(_tool_result("one\\ntwo", ["one", "two"]))
-    assert [d.content for d in docs] == ["one", "two"]
+    assert [d["content"] for d in docs] == ["one", "two"]
 
 
 def test_document_fields_are_carried_not_guessed():
@@ -401,33 +401,33 @@ def test_document_fields_are_carried_not_guessed():
     )
     assert len(docs) == 1
     d = docs[0]
-    assert (d.id, d.content, d.score) == ("m1", "lives in Berlin", 0.91)
-    assert d.metadata == {"session": "s2"}
-    assert d.as_record()["score"] == 0.91
+    assert (d["id"], d["content"], d["score"]) == ("m1", "lives in Berlin", 0.91)
+    assert d["metadata"] == {"session": "s2"}
+    assert d["score"] == 0.91
 
 
 def test_a_mapping_without_content_is_serialized_whole():
     docs = _documents(_tool_result("x", [{"fact": "drives a Tesla"}]))
-    assert docs[0].content == '{"fact": "drives a Tesla"}'
-    assert docs[0].id is None and docs[0].score is None
+    assert docs[0]["content"] == '{"fact": "drives a Tesla"}'
+    assert "id" not in docs[0] and "score" not in docs[0]
 
 
 def test_empty_documents_are_dropped_not_counted():
     docs = _documents(_tool_result("x", ["", "   ", "real"]))
-    assert [d.content for d in docs] == ["real"]
+    assert [d["content"] for d in docs] == ["real"]
 
 
 def test_passages_alias_round_trips():
     m = RetrievalMeasurement(query="q")
     m.passages = ["a", "b", "  "]
-    assert [d.content for d in m.documents] == ["a", "b"]
+    assert [d["content"] for d in m.documents] == ["a", "b"]
     assert m.passages == ["a", "b"]
     assert m.count == 2
 
 
 def test_record_carries_documents_and_the_text_alias():
     m = RetrievalMeasurement(query="q", provider="p")
-    m.documents = [RetrievedDocument(content="lives in Berlin", id="m1")]
+    m.documents = [Document(content="lives in Berlin", id="m1")]
     rec = m.as_record()
     assert rec["documents"] == [{"content": "lives in Berlin", "id": "m1"}]
     assert rec["passages"] == ["lives in Berlin"]
