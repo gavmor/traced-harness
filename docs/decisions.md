@@ -156,7 +156,8 @@ was given, `2` misconfiguration.
 There is no config file and no key store. The key is read from the environment
 at call time, never written to a trace, never put on a span, never logged, and
 never included in an exception message. With no decide flag, no decisions code
-runs and no environment variable above is read.
+runs; the two CLI-default variables are read when the parser is built, but
+nothing acts on them.
 
 ## What an annotated line looks like
 
@@ -270,8 +271,9 @@ Reading that record:
 - `raw` carries provider top-level keys other than `answers`, `model` and
   `usage`. Over 4096 characters it is replaced by `{"_truncated": true}`.
 
-Re-running the command produces a byte-identical file apart from the `measure`
-timings.
+Re-running the command produces a byte-identical file apart from the `otel`
+span identifiers, which are new on every run; `measure` timings may also
+differ.
 
 ## Errors
 
