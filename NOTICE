@@ -1,0 +1,8 @@
+This product includes a reimplementation of the OpenAI Decisions request and
+response protocol as documented in llm-openai-decisions (commit 4827324),
+Copyright Simon Willison, licensed under the Apache License 2.0.
+https://github.com/simonw/llm-openai-decisions
+
+No source code from that project is included. The wire protocol, question
+and answer types, and response-validation rules were derived from its
+documented behaviour.
