@@ -744,6 +744,24 @@ wheels = [
 ]
 
 [[package]]
+name = "openinference-instrumentation-agno"
+version = "1.0.13"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-instrumentation" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b4/de/d2846a0e9a19802efade963b027e78e9ad94099810e69ec54c2159e7bbdb/openinference_instrumentation_agno-1.0.13.tar.gz", hash = "sha256:e8cb2c86b4e1339eeefc112a89623bdc95335bde8011ea2a70635896954edb5b", size = 25983, upload-time = "2026-10-01T22:23:53.138Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/23/48d65299c2f45192e6cd96e56eb474becd11ba5aa87aa7ee802fdb8f5c0f/openinference_instrumentation_agno-1.0.13-py3-none-any.whl", hash = "sha256:aca4f3c19c0bbf791673ed3f10089eb5513df4de972f0b4e68fad84dc36af812", size = 31453, upload-time = "2026-10-01T22:23:51.749Z" },
+]
+
+[[package]]
 name = "openinference-semantic-conventions"
 version = "0.1.41"
 source = { registry = "https://pypi.org/simple" }
@@ -854,6 +872,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/94/78/a503801c1c8f80b1d8aad0e14106a7c57f39344001652a78a683f9a9089e/opentelemetry_exporter_otlp_proto_http-1.45.0.tar.gz", hash = "sha256:2f35496d96809f946f41b8805e6b93aec6c9b71b5fd759b75b6af4c084d992ae", size = 28818, upload-time = "2026-09-25T12:32:35.335Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/18/875e0ee47e035f324e42eda9aab47d58381a4412181dca251d3504e24680/opentelemetry_exporter_otlp_proto_http-1.45.0-py3-none-any.whl", hash = "sha256:74385f99266dafdefff41f3da4b76f6dba79d237a9d4487e6ff1ee653c74a0a3", size = 22260, upload-time = "2026-09-25T12:32:14.658Z" },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation"
+version = "0.66b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "packaging" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d1/97/e6959310cff3dbbce24ca0a60e5e12f773320d17480c779b038b55defd35/opentelemetry_instrumentation-0.66b0.tar.gz", hash = "sha256:316715ed7b33a12530c0ae3e8d4cdf26d70e1aad358d7ba256e5dea2d4ceed71", size = 43308, upload-time = "2026-09-25T12:35:46.504Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/08/bf39ca469f178963715ff6fd7012eec0b438f472703b11a64a40cbb14f6f/opentelemetry_instrumentation-0.66b0-py3-none-any.whl", hash = "sha256:0b32e2fcfec1e4bd48511a3b77ce32bfb1c16dcd5479396b21f9086a4b06c0c9", size = 36900, upload-time = "2026-09-25T12:34:50.029Z" },
 ]
 
 [[package]]
@@ -1446,6 +1479,7 @@ dependencies = [
     { name = "google-genai" },
     { name = "mcp" },
     { name = "openinference-instrumentation" },
+    { name = "openinference-instrumentation-agno" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
@@ -1467,6 +1501,7 @@ requires-dist = [
     { name = "google-genai", specifier = ">=2.28.0" },
     { name = "mcp", specifier = ">=1.2.0" },
     { name = "openinference-instrumentation", specifier = ">=0.1.0" },
+    { name = "openinference-instrumentation-agno" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.28.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0" },

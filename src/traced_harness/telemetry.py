@@ -19,6 +19,23 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 _initialized = False
 
 
+def instrument_agno(tracer_provider: TracerProvider | None = None) -> bool:
+    """Emit agent/LLM/tool spans via OpenInference, under its conventions.
+
+    Replaces hand-written ``agent.turn`` / ``tool_call.<name>`` spans carrying
+    ad-hoc ``gen_ai.*`` attributes. Returns False when the optional
+    instrumentor is absent — a minimal install runs, it just emits no spans.
+    """
+    try:
+        from openinference.instrumentation.agno import AgnoInstrumentor
+    except ImportError:
+        return False
+    AgnoInstrumentor().instrument(
+        tracer_provider=tracer_provider or trace.get_tracer_provider()
+    )
+    return True
+
+
 def setup_telemetry(service_name: str = "traced-harness") -> TracerProvider:
     """Initialize OpenTelemetry TracerProvider with optional OTLP export."""
     global _initialized
@@ -53,6 +70,7 @@ def setup_telemetry(service_name: str = "traced-harness") -> TracerProvider:
 
     trace.set_tracer_provider(provider)
     _initialized = True
+    instrument_agno(provider)
     return provider
 
 

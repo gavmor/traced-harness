@@ -12,6 +12,7 @@ dependencies = [
     "google-genai>=2.28.0",
     "mcp>=1.2.0",
     "openinference-instrumentation>=0.1.0",
+    "openinference-instrumentation-agno",
     "opentelemetry-api>=1.28.0",
     "opentelemetry-exporter-otlp>=1.28.0",
     "opentelemetry-sdk>=1.28.0",

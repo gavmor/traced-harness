@@ -14,7 +14,7 @@ from agno.db.in_memory import InMemoryDb
 from agno.models.google import Gemini
 from agno.tools.mcp import MCPTools
 from mcp.client import Client
-from opentelemetry import trace
+from openinference.instrumentation import using_attributes
 
 from traced_harness.skills import (
     Skill,
@@ -25,11 +25,8 @@ from traced_harness.skills import (
 )
 from traced_harness.telemetry import (
     estimate_tokens,
-    get_tracer,
     turn_telemetry,
 )
-
-tracer = get_tracer("traced.harness.agno")
 
 DEFAULT_MODEL = os.environ.get("AGENT_MODEL_NAME", "gemini-3.1-flash-lite-preview")
 
@@ -204,84 +201,59 @@ async def execute_turn(
 ) -> TurnResult:
     """Execute a turn with OpenTelemetry root and child tool spans."""
     now_iso = datetime.datetime.now(datetime.UTC).isoformat()
-    model_name = getattr(agent.model, "id", DEFAULT_MODEL)
 
-    with tracer.start_as_current_span(
-        "agent.turn",
-        kind=trace.SpanKind.INTERNAL,
-    ) as span:
-        span.set_attribute("gen_ai.system", "agno")
-        span.set_attribute("gen_ai.agent.name", "traced-harness")
-        span.set_attribute("gen_ai.session.id", session_id)
-        span.set_attribute("gen_ai.prompt", prompt)
-        span.set_attribute("gen_ai.model", model_name)
-        span.set_attribute("mcp.server.target", mcp_label)
+    # Anything running under this turn — an MCP memory tool, a context hook —
+    # records its measurements into `collected`; see
+    # `traced_harness.telemetry.turn_telemetry`. The agent/LLM/tool spans
+    # themselves come from AgnoInstrumentor (see `instrument_agno`), not from
+    # hand-written set_attribute calls here.
+    with (
+        using_attributes(
+            session_id=session_id, metadata={"mcp.server.target": mcp_label}
+        ),
+        turn_telemetry() as collected,
+    ):
+        resp = await agent.arun(prompt, session_id=session_id)
 
-        # Anything running under this turn — an MCP memory tool, a context
-        # hook — records its measurements into `collected`; see
-        # `traced_harness.telemetry.turn_telemetry`.
-        with turn_telemetry() as collected:
-            resp = await agent.arun(prompt, session_id=session_id)
+    output_text = str(resp.content) if resp and resp.content else ""
 
-        output_text = str(resp.content) if resp and resp.content else ""
-        span.set_attribute("gen_ai.completion", output_text)
+    # Prefer the provider's own tokenizer counts; `estimate_tokens` is the
+    # documented fallback for a model that reports none.
+    prompt_tokens, generated_tokens = _model_token_counts(resp)
+    collected[PROMPT_TOKENS_KEY] = (
+        prompt_tokens if prompt_tokens is not None else estimate_tokens(prompt)
+    )
+    collected[GENERATED_TOKENS_KEY] = (
+        generated_tokens
+        if generated_tokens is not None
+        else estimate_tokens(output_text)
+    )
 
-        # Prefer the provider's own tokenizer counts; `estimate_tokens` is the
-        # documented fallback for a model that reports none.
-        prompt_tokens, generated_tokens = _model_token_counts(resp)
-        collected[PROMPT_TOKENS_KEY] = (
-            prompt_tokens if prompt_tokens is not None else estimate_tokens(prompt)
+    tools_called: list[ToolExecution] = [
+        ToolExecution(
+            name=t.tool_name or "",
+            input_parameters=t.tool_args or {},
+            output=str(t.result) if t.result is not None else "",
         )
-        collected[GENERATED_TOKENS_KEY] = (
-            generated_tokens
-            if generated_tokens is not None
-            else estimate_tokens(output_text)
-        )
-        span.set_attribute("gen_ai.usage.input_tokens", collected[PROMPT_TOKENS_KEY])
-        span.set_attribute(
-            "gen_ai.usage.output_tokens", collected[GENERATED_TOKENS_KEY]
-        )
+        for t in resp.tools or []
+    ]
 
-        tools_called: list[ToolExecution] = []
-        for t in resp.tools or []:
-            tools_called.append(
-                ToolExecution(
-                    name=t.tool_name or "",
-                    input_parameters=t.tool_args or {},
-                    output=str(t.result) if t.result is not None else "",
-                )
-            )
+    skills_pool = (
+        skills if skills is not None else list(get_registered_skills().values())
+    )
+    skills_active = [s.name for s in skills_pool if s.active]
 
-        span.set_attribute("gen_ai.tool_calls.count", len(tools_called))
+    turn = TurnResult(
+        prompt=prompt,
+        output=output_text,
+        tools_called=tools_called,
+        session_id=session_id,
+        timestamp=now_iso,
+        skills_active=skills_active,
+        metadata=collected,
+    )
 
-        # Record child tool spans
-        for tc in tools_called:
-            with tracer.start_as_current_span(
-                f"tool_call.{tc.name}",
-                kind=trace.SpanKind.CLIENT,
-            ) as tool_span:
-                tool_span.set_attribute("gen_ai.tool.name", tc.name)
-                tool_span.set_attribute(
-                    "gen_ai.tool.parameters", json.dumps(tc.input_parameters)
-                )
-                tool_span.set_attribute("gen_ai.tool.output", tc.output[:2000])
+    if session_file:
+        log_turn_to_session(turn, session_file, mcp_label=mcp_label)
 
-        skills_pool = (
-            skills if skills is not None else list(get_registered_skills().values())
-        )
-        skills_active = [s.name for s in skills_pool if s.active]
-
-        turn = TurnResult(
-            prompt=prompt,
-            output=output_text,
-            tools_called=tools_called,
-            session_id=session_id,
-            timestamp=now_iso,
-            skills_active=skills_active,
-            metadata=collected,
-        )
-
-        if session_file:
-            log_turn_to_session(turn, session_file, mcp_label=mcp_label)
-
-        return turn
+    return turn
