@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import uuid
 from collections.abc import AsyncIterator
@@ -103,6 +104,55 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Disable automatic discovery of local/global skills",
     )
 
+    # Decision annotation over an already-recorded trace. Defaults come from the
+    # environment at parse time; nothing here is read at import time.
+    parser.add_argument(
+        "--decide",
+        dest="decide_trace",
+        type=Path,
+        default=None,
+        help="Annotate a recorded session trace JSONL with calibrated decisions",
+    )
+    parser.add_argument(
+        "--questions",
+        dest="decide_questions",
+        type=Path,
+        default=None,
+        help="Questions file: a native question list or a JSON Schema object",
+    )
+    parser.add_argument(
+        "--decisions-backend",
+        dest="decide_backend",
+        default=os.environ.get("TRACED_DECISIONS_BACKEND", "openai"),
+        help="Decisions backend: 'openai' or 'replay' (default: openai)",
+    )
+    parser.add_argument(
+        "--decisions-model",
+        dest="decide_model",
+        default=os.environ.get("TRACED_DECISIONS_MODEL", "gpt-6-luna"),
+        help="Model name for the decisions backend",
+    )
+    parser.add_argument(
+        "--replay-file",
+        dest="decide_replay",
+        type=Path,
+        default=None,
+        help="Recorded decision response bodies, required by the replay backend",
+    )
+    parser.add_argument(
+        "--decisions-out",
+        dest="decide_out",
+        type=Path,
+        default=None,
+        help="Output path for the annotated trace (default: <stem>.decided.jsonl)",
+    )
+    parser.add_argument(
+        "--decisions-fail-on-error",
+        dest="decide_fail_on_error",
+        action="store_true",
+        help="Exit with code 1 if any turn's decision call fails",
+    )
+
     # Allow 'traced-harness eval <file>' as well as 'traced-harness --eval <file>'
     effective_argv = list(argv) if argv is not None else sys.argv[1:]
     if effective_argv and effective_argv[0] == "eval":
@@ -113,9 +163,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parsed.eval_trace = Path(eval_path)
         return parsed
 
+    # ... and 'traced-harness decide <file>' as well as '--decide <file>'.
+    if effective_argv and effective_argv[0] == "decide":
+        decide_path = effective_argv[1] if len(effective_argv) > 1 else None
+        remaining = effective_argv[2:]
+        parsed = parser.parse_args(remaining)
+        if decide_path:
+            parsed.decide_trace = Path(decide_path)
+        parsed.skills = parsed.skill
+        return _check_decide_args(parser, parsed)
+
     parsed = parser.parse_args(argv)
     # Expose both .skill and .skills for convenience
     parsed.skills = parsed.skill
+    return _check_decide_args(parser, parsed)
+
+
+def _check_decide_args(
+    parser: argparse.ArgumentParser, parsed: argparse.Namespace
+) -> argparse.Namespace:
+    """Reject an incomplete decide invocation with argparse's exit code 2."""
+    if not getattr(parsed, "decide_trace", None):
+        return parsed
+    if not parsed.decide_questions:
+        parser.error("--decide requires --questions FILE")
+    if parsed.decide_backend == "replay" and not parsed.decide_replay:
+        parser.error("--decisions-backend replay requires --replay-file FILE")
     return parsed
 
 
@@ -141,6 +214,47 @@ async def _resolve_mcp_client(
 
 
 async def async_main(args: argparse.Namespace) -> None:
+    if getattr(args, "decide_trace", None):
+        from traced_harness.decisions import (
+            DecisionBackendError,
+            DecisionsConfigError,
+            annotate_trace,
+            build_decision_backend,
+            load_questions_file,
+        )
+
+        fail_on_error = getattr(args, "decide_fail_on_error", False)
+        try:
+            questions = load_questions_file(args.decide_questions)
+            backend = build_decision_backend(
+                name=args.decide_backend,
+                model=args.decide_model,
+                replay_file=args.decide_replay,
+            )
+        except DecisionsConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+        # Spans are dropped unless OTEL_EXPORTER_OTLP_ENDPOINT is set, so this
+        # is a no-op for the common offline run.
+        setup_telemetry()
+        try:
+            out_path = await annotate_trace(
+                args.decide_trace,
+                questions,
+                backend,
+                out_file=args.decide_out,
+                on_error="raise" if fail_on_error else "record",
+            )
+        except DecisionsConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        except DecisionBackendError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(out_path)
+        return
+
     if getattr(args, "eval_trace", None):
         from traced_harness.eval import display_trace_report, evaluate_trace
 
