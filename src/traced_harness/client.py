@@ -19,8 +19,16 @@ def parse_mcp_target(
     mcp_cmd: str | None = None,
     server_spec: str | None = None,
     url: str | None = None,
+    server: Any | None = None,
 ) -> tuple[Any, str]:
     """Resolve an MCP target into a Client-compatible argument and a display label."""
+    if server is not None:
+        # An already-constructed server object. A server built per run (with
+        # per-run state) has no importable module attribute to name it by, so
+        # ``server_spec`` cannot reach it.
+        label = getattr(server, "name", "") or type(server).__name__
+        return server, f"in-process:{label}"
+
     if mcp_cmd:
         parts = shlex.split(mcp_cmd)
         if not parts:
@@ -86,8 +94,9 @@ async def connect_mcp(
     mcp_cmd: str | None = None,
     server_spec: str | None = None,
     url: str | None = None,
+    server: Any | None = None,
 ) -> AsyncIterator[tuple[Client, str]]:
     """Establish connection to the resolved MCP server."""
-    target, label = parse_mcp_target(mcp_cmd, server_spec, url)
+    target, label = parse_mcp_target(mcp_cmd, server_spec, url, server)
     async with Client(target) as client:
         yield client, label

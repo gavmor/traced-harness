@@ -6,6 +6,7 @@ import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,6 +98,82 @@ def record_skill_activation_span(
 # ---------------------------------------------------------------------------
 
 MEASURE_TRACER_NAME = "traced.harness.measure"
+
+
+# ---------------------------------------------------------------------------
+# Per-turn metadata collection.
+#
+# A peripheral runs *inside* a turn (an MCP tool call, a context-engine hook)
+# and wants its measurements to land on that turn's result. It cannot return
+# them: the agent returns prose. So the harness opens a turn-scoped slot that
+# anything running under the turn may write into, and hands whatever is there
+# to the ``TurnResult``.
+#
+# The harness supplies the plumbing and nothing else: keys are the caller's
+# vocabulary, values are stored verbatim, and nothing here knows what a
+# "retrieval" or an "injection" is. Writes outside a turn are no-ops rather
+# than errors, so a peripheral stays usable when driven directly.
+# ---------------------------------------------------------------------------
+
+_turn_metadata: ContextVar[dict[str, Any] | None] = ContextVar(
+    "traced_harness_turn_metadata", default=None
+)
+
+
+@contextmanager
+def turn_telemetry() -> Iterator[dict[str, Any]]:
+    """Open a turn-scoped metadata slot and yield the dict being filled.
+
+    Nested turns each get their own slot; the previous one is restored on
+    exit, so a turn executed inside another turn cannot steal its records::
+
+        with turn_telemetry() as collected:
+            await agent.arun(prompt)
+        turn.metadata = collected
+    """
+    payload: dict[str, Any] = {}
+    token = _turn_metadata.set(payload)
+    try:
+        yield payload
+    finally:
+        _turn_metadata.reset(token)
+
+
+def record_turn_metadata(key: str, value: Any) -> bool:
+    """Store ``value`` under ``key`` on the active turn, if there is one.
+
+    Returns whether a turn was open — a peripheral driven outside a turn is
+    not an error, it simply has nowhere to record.
+    """
+    payload = _turn_metadata.get()
+    if payload is None:
+        return False
+    payload[key] = value
+    return True
+
+
+def append_turn_record(key: str, record: Any) -> bool:
+    """Append ``record`` to the list under ``key`` on the active turn.
+
+    Used for repeated measurements within one turn (several tool calls, say).
+    Returns whether a turn was open.
+    """
+    payload = _turn_metadata.get()
+    if payload is None:
+        return False
+    bucket = payload.setdefault(key, [])
+    if not isinstance(bucket, list):
+        raise TypeError(
+            f"turn metadata key {key!r} already holds "
+            f"{type(bucket).__name__}, not a list"
+        )
+    bucket.append(record)
+    return True
+
+
+def current_turn_metadata() -> dict[str, Any] | None:
+    """The active turn's metadata dict, or ``None`` outside a turn."""
+    return _turn_metadata.get()
 
 
 def estimate_tokens(text: str, chars_per_token: float = 4.0) -> int:
