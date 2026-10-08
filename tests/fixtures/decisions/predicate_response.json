@@ -1,0 +1,7 @@
+{
+  "model": "gpt-6-luna",
+  "answers": [
+    {"name": "answered_the_question", "type": "predicate", "probability": 0.93}
+  ],
+  "usage": {"input_tokens": 812, "output_tokens": 14}
+}

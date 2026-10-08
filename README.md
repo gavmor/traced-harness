@@ -17,6 +17,7 @@ A test bed harness for evaluating agentic peripherals (MCP, skills, etc.)
 - **Durable Trace Logging**: Writes clean turn-by-turn trace records into `sessions/trace_<id>.jsonl` including active skills and tool execution records for offline evaluation.
 - **Memory Providers (`traced_harness.memory`)**: Durable-memory plugins as a first-class peripheral alongside MCP and skills — a `MemoryProviderAdapter` lifecycle ABC, a tool/context-hook contract injected into the system prompt, and telemetry for retrieval latency, injected-token overhead, and consolidation cost (wall/CPU time + store growth).
 - **Multi-Session Benchmarking (`SessionRunner`)**: Runs an ordered `Scenario` of sessions with distinct `session_id`s, so in-context history is deliberately *not* carried across them and cross-session behaviour must come from the peripheral. Fires a `between_sessions` hook between them and measures its cost. The runner is domain-blind: it depends only on a structural `PeripheralLifecycle` protocol, so it works for any peripheral, not just memory.
+- **Decision Backends (`traced_harness.decisions`)**: Turns a recorded trace into calibrated numbers — predicates with probabilities, choices with confidences, scores over ordered levels — by annotating it afterwards into `<stem>.decided.jsonl`. The harness ships the mechanism (question/answer types, a `DecisionBackend` protocol, a `decision.turn` span, the trace slot) and never a rubric: which questions to ask is always the caller's. Includes an offline replay backend, so the whole path runs with no credential.
 
 ## Installation
 
@@ -57,4 +58,28 @@ traced-harness --skills-dir ./custom-skills/
 # Disable automatic local and global skill discovery
 traced-harness --no-skills
 ```
+
+### Decision backends
+
+Annotate a recorded trace with calibrated decisions. This exact command runs
+offline, with no API key:
+
+```bash
+traced-harness decide tests/fixtures/traces/clean_run.jsonl \
+  --questions docs/examples/decision-questions.json \
+  --decisions-backend replay \
+  --replay-file docs/examples/recorded-decisions.json \
+  --decisions-out /tmp/clean_run.decided.jsonl
+```
+
+It writes one annotated line per input line — the input itself is never
+modified — with each turn's answers under
+`additional_metadata.decisions`. Omit `--decisions-out` and the annotated copy
+lands beside the input as `<stem>.decided.jsonl`. The `openai` backend talks to
+the OpenAI Decisions endpoint instead and reads `OPENAI_API_KEY` at call time;
+that path is **unexercised** (see the note in the docs).
+
+Full reference, the questions-file format, the record shape and a real sample
+line: [docs/decisions.md](docs/decisions.md).
+
 

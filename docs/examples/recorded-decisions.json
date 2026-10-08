@@ -1,0 +1,70 @@
+[
+  {
+    "model": "gpt-6-luna",
+    "answers": [
+      {
+        "name": "answered_the_question",
+        "type": "predicate",
+        "probability": 0.93
+      },
+      {
+        "name": "tool_use",
+        "type": "choice",
+        "choice": "necessary",
+        "confidence": 0.88,
+        "probabilities": [
+          {"value": "necessary", "probability": 0.88},
+          {"value": "unnecessary", "probability": 0.09},
+          {"value": "missing", "probability": 0.03}
+        ]
+      },
+      {
+        "name": "answer_quality",
+        "type": "score",
+        "score": 2.53,
+        "confidence": 0.63,
+        "probabilities": [
+          {"value": 0, "label": "Poor", "probability": 0.01},
+          {"value": 1, "label": "Adequate", "probability": 0.08},
+          {"value": 2, "label": "Good", "probability": 0.28},
+          {"value": 3, "label": "Excellent", "probability": 0.63}
+        ]
+      }
+    ],
+    "usage": {"input_tokens": 812, "output_tokens": 14}
+  },
+  {
+    "model": "gpt-6-luna",
+    "answers": [
+      {
+        "name": "answered_the_question",
+        "type": "predicate",
+        "probability": 0.97
+      },
+      {
+        "name": "tool_use",
+        "type": "choice",
+        "choice": "necessary",
+        "confidence": 0.91,
+        "probabilities": [
+          {"value": "necessary", "probability": 0.91},
+          {"value": "unnecessary", "probability": 0.06},
+          {"value": "missing", "probability": 0.03}
+        ]
+      },
+      {
+        "name": "answer_quality",
+        "type": "score",
+        "score": 2.34,
+        "confidence": 0.52,
+        "probabilities": [
+          {"value": 0, "label": "Poor", "probability": 0.02},
+          {"value": 1, "label": "Adequate", "probability": 0.14},
+          {"value": 2, "label": "Good", "probability": 0.32},
+          {"value": 3, "label": "Excellent", "probability": 0.52}
+        ]
+      }
+    ],
+    "usage": {"input_tokens": 794, "output_tokens": 14}
+  }
+]
