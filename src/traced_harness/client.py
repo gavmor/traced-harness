@@ -75,10 +75,7 @@ def parse_mcp_target(
     except (ImportError, AttributeError):
         pass
 
-    raise ValueError(
-        "No MCP server specified. Provide --mcp '<cmd>', --server '<module:server>', "
-        "or define MCP_SERVER / .mcp.json in the current directory."
-    )
+    return None, "standalone"
 
 
 @asynccontextmanager
@@ -86,8 +83,11 @@ async def connect_mcp(
     mcp_cmd: str | None = None,
     server_spec: str | None = None,
     url: str | None = None,
-) -> AsyncIterator[tuple[Client, str]]:
-    """Establish connection to the resolved MCP server."""
+) -> AsyncIterator[tuple[Client | None, str]]:
+    """Establish connection to the resolved MCP server, or yield None in standalone mode."""
     target, label = parse_mcp_target(mcp_cmd, server_spec, url)
-    async with Client(target) as client:
-        yield client, label
+    if target is None:
+        yield None, label
+    else:
+        async with Client(target) as client:
+            yield client, label
