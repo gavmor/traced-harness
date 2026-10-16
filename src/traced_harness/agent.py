@@ -47,8 +47,18 @@ class TurnResult:
     skills_active: list[str] = field(default_factory=list)
 
 
-def get_model(model_name: str = DEFAULT_MODEL) -> Gemini:
+def get_model(model_name: str = DEFAULT_MODEL) -> Any:
     """Initialize model provider with environment API keys."""
+    if (
+        model_name.startswith("ollama/")
+        or ":" in model_name
+        or "qwen" in model_name.lower()
+        or "llama" in model_name.lower()
+        or "gemma" in model_name.lower()
+    ):
+        from agno.models.ollama import Ollama
+        clean_name = model_name.removeprefix("ollama/")
+        return Ollama(id=clean_name, options={"num_ctx": 8192})
     if "GOOGLE_API_KEY" not in os.environ and "GEMINI_API_KEY" in os.environ:
         os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
     api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -86,10 +96,12 @@ async def create_agent(
     instructions_list: list[str] = []
     if skills:
         register_skills(skills)
-        tools.append(activate_skill)
+        if any(not s.active for s in skills):
+            tools.append(activate_skill)
         skill_prompt = build_skill_instructions(skills)
         if skill_prompt:
             instructions_list.append(skill_prompt)
+        instructions_list.append("Be direct and concise in internal planning. Provide your final response cleanly.")
 
     if memory_adapter is not None:
         # Imported lazily: the harness core must not depend on the memory module.
@@ -180,6 +192,11 @@ async def execute_turn(
 
         resp = await agent.arun(prompt, session_id=session_id)
         output_text = str(resp.content) if resp and resp.content else ""
+        if not output_text and resp and hasattr(resp, "messages") and resp.messages:
+            last_msg = resp.messages[-1]
+            output_text = getattr(last_msg, "content", "") or getattr(last_msg, "reasoning_content", "") or ""
+            if not output_text and hasattr(resp, "reasoning_content") and resp.reasoning_content:
+                output_text = str(resp.reasoning_content)
         span.set_attribute("gen_ai.completion", output_text)
 
         tools_called: list[ToolExecution] = []
